@@ -1,3 +1,5 @@
+<img width="1024" height="572" alt="image" src="https://github.com/user-attachments/assets/4a891a09-b66a-4d33-b27a-b8071bff6474" />
+
 # Laravel Runtime Benchmark
 
 This repository provides a repeatable benchmark for one Laravel application running on five PHP server setups:

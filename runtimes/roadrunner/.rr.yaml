@@ -1,0 +1,16 @@
+version: '3'
+
+server:
+  command: "php artisan octane:roadrunner"
+
+http:
+  address: 0.0.0.0:8000
+  pool:
+    num_workers: 2
+    max_jobs: 0
+    allocate_timeout: 60s
+    destroy_timeout: 60s
+
+logs:
+  mode: production
+  level: warn

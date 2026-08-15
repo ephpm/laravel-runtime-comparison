@@ -1,0 +1,13 @@
+.git
+.env
+app/.env
+app/.phpunit.result.cache
+app/database/database.sqlite
+app/node_modules
+app/storage/logs/*
+app/storage/framework/cache/data/*
+app/storage/framework/sessions/*
+app/storage/framework/views/*
+app/bootstrap/cache/*.php
+app/vendor
+results

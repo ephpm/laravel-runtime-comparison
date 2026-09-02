@@ -5,6 +5,12 @@ services:
     build:
       context: ../..
       dockerfile: runtimes/nginx-fpm/Dockerfile
+      args:
+        # Session/cache store baked into the image; see README.md, "Benchmark
+        # profiles". upstream (default) = database, which is what
+        # app/.env.example ships; runtime = array. Build time, not run time:
+        # `php artisan config:cache` bakes the drivers into the image.
+        BENCH_PROFILE: "${BENCH_PROFILE:-upstream}"
     environment:
       APP_ENV: production
       APP_DEBUG: "false"

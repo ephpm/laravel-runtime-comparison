@@ -10,12 +10,30 @@ non-Docker engine.
 There are **two recordings**. Both are kept, because they measure different
 ePHPm builds and the difference between them is the point:
 
-| Recording | Date | ePHPm build | Shape |
-| --- | --- | --- | --- |
-| **First** | 2026-09-02 (UTC) | `ephpm/ephpm:v0.8.7-php8.4`, unmodified | primary 3 x 30s + supplementary 1 x 20s |
-| **Second** | 2026-09-02 (UTC), later | ePHPm `main` @ `6557152` | 3 x 30s, plus a v0.8.7 "before" leg |
+| Recording | Date | ePHPm build | Shape | Profile |
+| --- | --- | --- | --- | --- |
+| **First** | 2026-09-02 (UTC) | `ephpm/ephpm:v0.8.7-php8.4`, unmodified | 3 x 30s, plus a 1 x 20s second pass | `upstream`, then `runtime` |
+| **Second** | 2026-09-02 (UTC), later | ePHPm `main` @ `6557152` | 3 x 30s, plus a v0.8.7 "before" leg | `runtime` |
 
 Everything not ePHPm is identical between them.
+
+## Which profile every number below came from
+
+`BENCH_PROFILE` (README.md, "Benchmark profiles") selects the session and cache
+store every image is built with. Both values are committed and either is one
+environment variable away — nothing has to be edited to reproduce either one:
+
+| `BENCH_PROFILE` | Session and cache store | What it measures |
+| --- | --- | --- |
+| `upstream` (default) | `database` | The shared SQLite session-write lock |
+| `runtime` | `array` | The runtimes |
+
+**Every differentiating number in this document was recorded with
+`BENCH_PROFILE=runtime`.** The `upstream` numbers are kept, and labelled, in
+"First recording"; they are what the harness measures as it ships, and they do
+not separate the runtimes. Each run directory carries an `app-config.txt` naming
+the drivers its containers actually ran, and `bench/run.sh` aborts rather than
+record a run whose containers disagree with the requested profile.
 
 ## Verdict
 
@@ -67,8 +85,8 @@ caveats below say why.
 
 The benchmark as configured upstream is dominated by a bottleneck that is not
 the runtime, and the default numbers separate the runtimes very poorly. See
-"Two measurements, and why". Both recordings' verdicts come from the
-supplementary (array sessions/cache) configuration.
+"Two measurements, and why". Both recordings' verdicts come from
+`BENCH_PROFILE=runtime` (array sessions and cache).
 
 ## Read the two classes separately
 
@@ -84,10 +102,12 @@ the framework-side lifecycle is the same code in both cases.
 
 ## Two measurements, and why
 
-### Primary run: the harness exactly as upstream ships it
+### `BENCH_PROFILE=upstream`: the harness exactly as upstream ships it
 
 Three rounds, 30s per endpoint, 10 threads, 100 connections, 100 warm-up
-requests. This is the run to quote if you want "the upstream harness, unmodified."
+requests, `SESSION_DRIVER=database` and `CACHE_STORE=database` straight out of
+the committed `app/.env.example`. This is the run to quote if you want "the
+upstream harness, unmodified."
 
 It has a problem. Every runtime lands in a narrow 95-165 req/s band, average
 latency sits at 650-1000ms, and worker-mode runtimes beat per-request FPM by
@@ -108,23 +128,40 @@ only ~1.4x where 3-10x is normal for Octane. Three checks established why:
    SQLite serializes writers with a global write lock, so all seven runtimes
    queue behind the same lock.
 
-That bottleneck is identical for every runtime, so the primary run is *fair*.
-It is just mostly a measurement of SQLite session-write contention rather than
-of request handling, and the runtime differences in it are small relative to
-the shared ceiling.
+That bottleneck is identical for every runtime, so the `upstream` profile is
+*fair*. It is just mostly a measurement of SQLite session-write contention
+rather than of request handling, and the runtime differences in it are small
+relative to the shared ceiling.
 
-### Supplementary run: the same harness with the shared lock removed
+**This is the part worth taking upstream on its own.** The size of the effect is
+easy to miss because it hides behind a comparison that still looks internally
+consistent. Same host, same session, same images apart from the two drivers:
 
-`SESSION_DRIVER=array` and `CACHE_STORE=array` in `app/.env.example`, all
-images rebuilt, everything else identical. `DB_CONNECTION` stays `sqlite`, so
-`/api/db` still does its four real queries.
+| | `BENCH_PROFILE=runtime` | `BENCH_PROFILE=upstream` |
+| --- | ---: | ---: |
+| FrankenPHP, `/api/static` | 1,863 req/s | 116 req/s |
+| ePHPm worker, `/api/static` | 2,147 req/s | 30-70 req/s |
+| Scaling, 1 -> 100 connections | scales | 130 -> 197 req/s |
 
-This is a deviation from upstream and is **not** committed to the repo —
-`app/.env.example` is restored to upstream's values after each run. It is
+A 16-60x drop, in the same direction for every runtime, with throughput almost
+flat against concurrency — effective parallelism of about one, which is what a
+single serialized writer looks like. Any harness that puts a `database` session
+store in front of a SQLite connection is measuring that writer, not the server
+under test.
+
+### `BENCH_PROFILE=runtime`: the same harness with the shared lock removed
+
+`SESSION_DRIVER=array` and `CACHE_STORE=array`, all images rebuilt, everything
+else identical. `DB_CONNECTION` stays `sqlite`, so `/api/db` still does its four
+real queries.
+
+This is a deviation from upstream's default, and it is committed as such: it is
+selected with `BENCH_PROFILE=runtime`, not by editing a file, so one clone
+reproduces both configurations and neither depends on local state. It is
 included because it is the only configuration that actually separates the
-runtimes. The **second recording is supplementary-only**: the first recording
-already established what the primary configuration measures, and re-recording
-the SQLite write lock would not say anything about a dispatch-queue change.
+runtimes. The **second recording is `runtime`-only**: the first recording
+already established what the `upstream` profile measures, and re-recording the
+SQLite write lock would not say anything about a dispatch-queue change.
 
 ## Second recording — ePHPm `main` @ 6557152
 
@@ -137,7 +174,7 @@ validation, a CI change, and a docs change.
 
 Three rounds, 30s per endpoint, 10 threads, 100 connections, 100 warm-up
 requests, 60s cooldown between runtime sessions, harness runtime/endpoint
-rotation intact. Array sessions and cache. Cells are `mean [min-max]` across
+rotation intact, `BENCH_PROFILE=runtime`. Cells are `mean [min-max]` across
 the three rounds. Zero `wrk` timeouts anywhere in this recording.
 
 ### Worker class — throughput, requests/sec
@@ -286,9 +323,17 @@ so it is one command away.
 To run it:
 
 ```bash
-# One image, pinned across every arm; depth comes from the environment.
-SKIP_BUILD=1 WORKER_BACKLOG=8 RUN_ID=sweep-b8 bash bench/run.sh ephpm-worker
+# Build the pinned image once, on the profile the sweep is meant to run on.
+BENCH_PROFILE=runtime RUN_ID=sweep-b0 bash bench/run.sh ephpm-worker
+
+# Then one image, pinned across every arm; depth comes from the environment.
+BENCH_PROFILE=runtime SKIP_BUILD=1 WORKER_BACKLOG=8 RUN_ID=sweep-b8 \
+  bash bench/run.sh ephpm-worker
 ```
+
+`BENCH_PROFILE` has to be repeated on every arm even though `SKIP_BUILD=1`
+rebuilds nothing: the runner checks the running container's compiled config
+against it and aborts on a mismatch, and the default is `upstream`.
 
 `runtimes/ephpm-worker/docker-compose.yml` forwards `WORKER_BACKLOG` as
 `EPHPM_PHP__WORKER_BACKLOG`, so depth is a pure environment override and the
@@ -309,16 +354,21 @@ is not on its own a latency win. And in worker mode `[php] overload_policy =
 "shallow queue sheds sooner" argument for keeping the default low applies to
 the experimental `fpm_engine = "pool"` path, not to worker mode.
 
-### Caveat that cost a session: rebuilding re-bakes the session driver
+### Caveat that cost a session: an image runs the profile it was built with
 
-The `array` session/cache setting that the supplementary run depends on is an
-**uncommitted** edit to `app/.env.example`, and the Dockerfiles bake it in with
-`php artisan config:cache`. An image therefore runs whatever driver the tree
-had *when that image was built*, which need not be what the tree says now and
-is not visible in any config file at run time.
+The Dockerfiles bake `session.driver` and `cache.default` into
+`bootstrap/cache/config.php` with `php artisan config:cache`, so an image runs
+whatever `BENCH_PROFILE` it was built with. That is invisible at run time — no
+config file in the container tree says it, and no environment variable changes
+it.
 
-Rebuilding against a tree that had `SESSION_DRIVER=database` silently
-reintroduces the SQLite session-write lock. The failure does not look like a
+Historically this was worse: the `array` setting was an **uncommitted** edit to
+`app/.env.example` rather than a committed knob, so an image's drivers were
+whatever the working tree happened to hold at build time, and nobody with a
+clean clone could reproduce the numbers at all
+([ephpm/ephpm#456](https://github.com/ephpm/ephpm/issues/456)). Rebuilding
+against a tree that had been restored to `SESSION_DRIVER=database` silently
+reintroduced the SQLite session-write lock. The failure does not look like a
 config problem:
 
 - every runtime collapses together (FrankenPHP 1,863 -> 116 req/s, ePHPm worker
@@ -331,20 +381,26 @@ config problem:
   reads as "the host died" rather than "the config changed". A control only
   controls for what it does not share; a shared rebuild is shared.
 
-`bench/run.sh` now records the effective drivers per run in
-`app-config.txt`, read out of the compiled config cache inside the container,
-so every result directory says which regime produced it. Check it before
-trusting any number:
+Two things now stand between that and a recorded number. The profile is a
+committed build argument, so choosing one is `BENCH_PROFILE=runtime` rather
+than an edit that can be forgotten or reverted. And `bench/run.sh` reads the
+effective drivers out of the compiled config cache inside each running
+container into `app-config.txt`:
 
 ```
 session.driver=array cache.default=array db.default=sqlite
 ```
 
+If those do not match the requested profile, the run **aborts** instead of
+producing numbers — including under `SKIP_BUILD=1`, where the images are
+deliberately not rebuilt. Read `app-config.txt`, never the source tree, when
+deciding what an existing number measured.
+
 ## First recording — `ephpm/ephpm:v0.8.7-php8.4`
 
 Kept as recorded. This is what the v0.8.7 release measures.
 
-### Supplementary run (sessions/cache = array, 1 round x 20s)
+### `BENCH_PROFILE=runtime` (array sessions/cache, 1 round x 20s)
 
 #### Worker class — throughput, requests/sec
 
@@ -380,7 +436,7 @@ Kept as recorded. This is what the v0.8.7 release measures.
 | Nginx + PHP FPM | **110.2** | **111.5** | **114.1** | **173.0** |
 | **ePHPm per-request** | 125.4 | 114.8 | 115.5 | 157.4 |
 
-### Primary run (upstream defaults, 3 rounds x 30s)
+### `BENCH_PROFILE=upstream` (database sessions/cache, 3 rounds x 30s)
 
 Throughput, requests/sec, mean of three rounds with standard deviation. Every
 runtime here is queued behind the shared SQLite write lock described above, so
@@ -557,22 +613,48 @@ release CI.
 
 ## Reproducing
 
+From a clean clone, with nothing edited. Both recordings are one environment
+variable apart:
+
 ```bash
-# Choose which ephpm binary the two ePHPm images run.
+git clone https://github.com/ephpm/laravel-runtime-comparison
+cd laravel-runtime-comparison
+
+# Choose which ephpm binary the two ePHPm images run. Required before either
+# command below: runtimes/ephpm-bin/ is gitignored, so a clean clone has no
+# binary for the two ePHPm images to copy in.
 bash bench/select-ephpm-binary.sh published            # the base image's v0.8.7
 bash bench/select-ephpm-binary.sh /path/to/built/ephpm # a local build
 
-# Primary run, upstream harness
+# First recording, BENCH_PROFILE=upstream leg -- the harness as it ships,
+# database sessions and cache, all seven runtimes queued behind one SQLite
+# write lock. This is the default, so the variable can be omitted.
+BENCH_PROFILE=upstream \
 COMPOSE_CMD="podman compose" \
-ROUNDS=3 COOLDOWN=60 ENDPOINT_COOLDOWN=0 INITIAL_COOLDOWN=60 \
+ROUNDS=3 DURATION=30s COOLDOWN=60 ENDPOINT_COOLDOWN=0 INITIAL_COOLDOWN=60 \
 bash bench/run.sh all
 
-# Supplementary run: first set SESSION_DRIVER=array and CACHE_STORE=array
-# in app/.env.example and rebuild all images, then
+# Every differentiating number in this document: BENCH_PROFILE=runtime, array
+# sessions and cache. The images rebuild, because the drivers are baked in at
+# build time.
+BENCH_PROFILE=runtime \
 COMPOSE_CMD="podman compose" \
 ROUNDS=3 DURATION=30s COOLDOWN=60 ENDPOINT_COOLDOWN=0 INITIAL_COOLDOWN=60 \
 bash bench/run.sh all
 ```
+
+The first recording's `runtime` leg was one round of 20s
+(`ROUNDS=1 DURATION=20s`); everything else about it matches the second command.
+The second recording's v0.8.7 "before" leg is the same command restricted to
+the two ePHPm entries (`bash bench/run.sh ephpm` and `bash bench/run.sh
+ephpm-worker`) after
+`bash bench/select-ephpm-binary.sh published`.
+
+Confirm what a run actually measured by reading
+`results/<run-id>/<runtime>/run-N/app-config.txt`, which is written from the
+compiled config cache inside the container. `bench/run.sh` aborts if it
+disagrees with `BENCH_PROFILE`, so a completed run cannot be of the other
+profile.
 
 To build the `main` binary the way the second recording did:
 
@@ -589,8 +671,14 @@ P99 only); `percentiles.csv` is generated alongside it and carries P50/P75/P90/P
 per runtime, endpoint and round, which is what the tail tables above are built
 from.
 
-| Run ID | What |
-| --- | --- |
-| `20260902T001036Z` | First recording, primary run |
-| `20260902T050000Z-main6557152` | Second recording, all seven runtimes on `main` @ 6557152 |
-| `20260902T0700Z-v087before` | Second recording, the two ePHPm entries on published v0.8.7 |
+| Run ID | Profile | What |
+| --- | --- | --- |
+| `20260902T001036Z` | `upstream` | First recording, the harness as it ships |
+| `20260902T050000Z-main6557152` | `runtime` | Second recording, all seven runtimes on `main` @ 6557152 |
+| `20260902T0700Z-v087before` | `runtime` | Second recording, the two ePHPm entries on published v0.8.7 |
+
+Those three `settings.txt` files predate the `BENCH_PROFILE` knob and so do not
+carry a `bench_profile=` line; the profile for each is stated in the table
+above. Runs recorded from here on record it themselves. The first recording's
+`runtime` leg is not among the committed run directories; its numbers are the
+tables under "First recording".

@@ -16,6 +16,25 @@ RESULT_ROOT="${RESULT_ROOT:-$ROOT_DIR/results}"
 RESULT_DIR="$RESULT_ROOT/$RUN_ID"
 RUNTIME_LIST=""
 
+# Which session/cache store every image is built with. See README.md,
+# "Benchmark profiles". Exported because the Compose files read it as a build
+# argument; the Dockerfiles map it onto SESSION_DRIVER and CACHE_STORE before
+# `php artisan config:cache` bakes them in.
+#
+#   upstream -- database, exactly what app/.env.example ships
+#   runtime  -- array
+BENCH_PROFILE="${BENCH_PROFILE:-upstream}"
+export BENCH_PROFILE
+
+case "$BENCH_PROFILE" in
+  upstream) EXPECTED_STORE="database" ;;
+  runtime) EXPECTED_STORE="array" ;;
+  *)
+    printf 'BENCH_PROFILE must be "upstream" or "runtime", got: %s\n' "$BENCH_PROFILE" >&2
+    exit 1
+    ;;
+esac
+
 # Container engine. Defaults to Docker Compose v2. Set COMPOSE_CMD to run the
 # suite under a different engine, for example COMPOSE_CMD="podman compose".
 read -r -a COMPOSE <<< "${COMPOSE_CMD:-docker compose}"
@@ -73,6 +92,8 @@ usage() {
   printf 'Usage: %s [runtime|all]\n' "$0"
   printf 'Runtime values: frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker\n'
   printf 'Defaults: ROUNDS=3 DURATION=30s THREADS=10 CONNECTIONS=100 TIMEOUT=5s WARMUP_REQUESTS=100 COOLDOWN=900.\n'
+  printf 'BENCH_PROFILE=upstream|runtime selects the session/cache store the images are built with\n'
+  printf '(upstream=database, the harness default; runtime=array). Default: upstream.\n'
 }
 
 is_complete() {
@@ -96,6 +117,10 @@ prepare_runtime() {
   # reliably, so re-running `compose build` between arms mints a new image ID
   # from unchanged inputs. That is a variable the sweep is not trying to
   # measure, so the image is built once up front and pinned for every arm.
+  #
+  # It does not skip the BENCH_PROFILE check: an image built with the other
+  # profile is caught after start-up and aborts the run rather than being
+  # measured.
   if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
     printf '  build: %s (skipped, SKIP_BUILD=1)\n' "$runtime"
     return 0
@@ -163,25 +188,36 @@ run_one() {
     > "$run_dir/php-runtime.txt" 2>&1 || printf 'metadata capture failed for %s\n' "$runtime" >> "$run_dir/php-runtime.txt"
 
   # Which session/cache driver this image ACTUALLY runs, read out of the
-  # compiled config cache inside the container.
+  # compiled config cache inside the container, and checked against the profile
+  # this run asked for.
   #
-  # This is not paranoia. The array-driver setting lives in app/.env.example,
-  # is baked in at build time by `php artisan config:cache`, and is normally an
-  # uncommitted edit -- so an image's driver is whatever the tree said when it
-  # was built, which need not be what the tree says now. Building against a
-  # tree that had SESSION_DRIVER=database silently reintroduces the SQLite
-  # session-write lock: every runtime collapses by 10-60x, together, and an
-  # untouched-looking control that was also rebuilt collapses with them, so it
-  # reads as a dead host rather than a config change. Recording it per run
-  # makes every result directory self-describing.
+  # `php artisan config:cache` bakes the drivers into the image at build time,
+  # so an image runs whatever BENCH_PROFILE it was built with -- which need not
+  # be what this shell asked for, and is not visible in any config file at run
+  # time. Running the wrong one does not present as a config problem: every
+  # runtime collapses by 10-60x, together, so the comparison still looks
+  # internally fair, and a control runtime that was rebuilt in the same pass
+  # collapses with the subject, which reads as a dead host rather than a
+  # changed config. Mismatch is fatal on purpose; an unverifiable run is worse
+  # than no run.
   # Single-quoted for the inner shell; the snippet itself contains no single
   # quotes, so it survives the nesting intact.
   config_probe='$c = require "/var/www/html/bootstrap/cache/config.php"; printf("session.driver=%s cache.default=%s db.default=%s\n", $c["session"]["driver"], $c["cache"]["default"], $c["database"]["default"]);'
-  "${COMPOSE[@]}" -f "$compose" exec -T "$service" \
-    sh -c "$php_command -r '$config_probe'" \
-    > "$run_dir/app-config.txt" 2>&1 \
-    || printf 'app config capture failed for %s\n' "$runtime" >> "$run_dir/app-config.txt"
+  if ! "${COMPOSE[@]}" -f "$compose" exec -T "$service" \
+      sh -c "$php_command -r '$config_probe'" > "$run_dir/app-config.txt" 2>&1; then
+    printf 'Could not read the compiled config cache from %s. Refusing to measure a run whose configuration cannot be verified.\n' "$runtime" >&2
+    cat "$run_dir/app-config.txt" >&2
+    return 1
+  fi
   printf '    app config: %s\n' "$(tr '\n' ' ' < "$run_dir/app-config.txt")"
+
+  if ! grep -q "session.driver=$EXPECTED_STORE cache.default=$EXPECTED_STORE" "$run_dir/app-config.txt"; then
+    printf 'BENCH_PROFILE=%s expects session.driver=%s and cache.default=%s, but the %s image is running: %s\n' \
+      "$BENCH_PROFILE" "$EXPECTED_STORE" "$EXPECTED_STORE" "$runtime" \
+      "$(tr '\n' ' ' < "$run_dir/app-config.txt")" >&2
+    printf 'That image was built with a different profile. Rebuild it (do not pass SKIP_BUILD=1) or set BENCH_PROFILE to match it.\n' >&2
+    return 1
+  fi
 
   for endpoint in $endpoint_order; do
     url="http://127.0.0.1:$port/api/$endpoint"
@@ -210,6 +246,8 @@ run_one() {
 write_settings() {
   {
     printf 'run_id=%s\n' "$RUN_ID"
+    printf 'bench_profile=%s\n' "$BENCH_PROFILE"
+    printf 'session_and_cache_store=%s\n' "$EXPECTED_STORE"
     printf 'rounds=%s\n' "$ROUNDS"
     printf 'duration=%s\n' "$DURATION"
     printf 'threads=%s\n' "$THREADS"
@@ -282,6 +320,7 @@ mkdir -p "$RESULT_DIR"
 write_settings
 write_schedule
 
+printf 'Benchmark profile: %s (session and cache store: %s)\n' "$BENCH_PROFILE" "$EXPECTED_STORE"
 printf 'Preparing runtime images before measurements...\n'
 if [[ "$RUNTIME_LIST" == "all" ]]; then
   for runtime in frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker; do

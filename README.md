@@ -117,6 +117,64 @@ All setups enable OPcache. JIT is disabled in the shared PHP configuration. The 
 
 The runtime Dockerfiles copy the same `app/composer.json` and `app/composer.lock` files. This keeps the Laravel dependency set identical across all images.
 
+## Benchmark profiles
+
+All four `/api/*` routes are declared in `routes/web.php`, so they carry the
+`web` middleware group and its `StartSession`. With the session and cache stores
+that `app/.env.example` ships — `SESSION_DRIVER=database` and
+`CACHE_STORE=database` on top of `DB_CONNECTION=sqlite` — every request performs
+a SQLite write. SQLite serializes writers behind one global write lock, so all
+seven runtimes queue behind the same lock and the suite mostly measures that
+lock rather than the runtimes.
+
+`BENCH_PROFILE` selects which of the two configurations the images are built
+with. Both are committed; neither requires editing a file.
+
+| `BENCH_PROFILE` | Session and cache store | What the suite then measures |
+| --- | --- | --- |
+| `upstream` (default) | `database` | The SQLite session-write lock, shared by all seven runtimes |
+| `runtime` | `array` | The runtimes. `/api/db` still runs its four real SQLite queries |
+
+Nothing else differs between the two. `DB_CONNECTION` stays `sqlite` in both.
+
+The measured difference is large. On the host described in `RESULTS-EPHPM.md`,
+moving from `runtime` to `upstream` took FrankenPHP from 1,863 to 116 req/s and
+ePHPm worker mode from 2,147 to 30-70 req/s, and under `upstream` throughput
+stops scaling with concurrency at all (130 req/s at one connection, 197 req/s at
+one hundred) — the signature of a serialized resource rather than slow request
+handling. Under `upstream` every runtime lands in the same narrow 95-165 req/s
+band, so that profile cannot separate them. It is still a *fair* comparison,
+because the bottleneck is identical for every runtime; it is just a measurement
+of the session store.
+
+```bash
+BENCH_PROFILE=upstream bash bench/run.sh all   # the harness as it ships
+BENCH_PROFILE=runtime  bash bench/run.sh all   # the runtimes
+```
+
+`BENCH_PROFILE` is a **build-time** selection, not a run-time one. Laravel bakes
+`session.driver` and `cache.default` into `bootstrap/cache/config.php` when
+`php artisan config:cache` runs during the image build, so an image serves
+whatever profile it was built with regardless of its environment. Switching
+profiles therefore rebuilds the images; the Compose files pass `BENCH_PROFILE`
+through as a Docker build argument and the Dockerfiles map it onto
+`SESSION_DRIVER` and `CACHE_STORE` before `config:cache` runs.
+
+Because an image's profile is invisible at run time, `bench/run.sh` reads the
+compiled config cache out of each running container into
+`results/<run-id>/<runtime>/run-N/app-config.txt`:
+
+```text
+session.driver=array cache.default=array db.default=sqlite
+```
+
+If that does not match the requested `BENCH_PROFILE`, the run **aborts** instead
+of recording numbers. This matters because a profile mismatch does not look like
+a configuration bug: every runtime collapses together, so the comparison still
+looks internally fair, and a control runtime rebuilt in the same pass collapses
+with the subject, which reads as a dead host. Always read `app-config.txt`, not
+the source tree, when deciding what a recorded number measured.
+
 ## Endpoints
 
 The benchmark tests four HTTP endpoints:
@@ -149,7 +207,7 @@ The Docker benchmark also performs a readiness check and a small endpoint check 
 
 ## Running a benchmark
 
-Run the default benchmark profile for all runtimes:
+Run all runtimes with the default settings, which is `BENCH_PROFILE=upstream`:
 
 ```bash
 make bench
@@ -189,8 +247,10 @@ The runner supports these environment variables:
 | `COOLDOWN` | `900` | Seconds between runtime sessions |
 | `INITIAL_COOLDOWN` | Value of `COOLDOWN` | Seconds to wait after image preparation |
 | `RUN_ID` | Current UTC timestamp | Directory name under `results/` |
+| `BENCH_PROFILE` | `upstream` | Session and cache store the images are built with: `upstream` (`database`) or `runtime` (`array`). See "Benchmark profiles" |
+| `SKIP_BUILD` | `0` | `1` measures whatever image is already tagged instead of rebuilding. The `BENCH_PROFILE` check still runs |
 
-For a profile with a 10 minute initial wait, 4 minute endpoint breaks, and 5 minute runtime breaks:
+For a schedule with a 10 minute initial wait, 4 minute endpoint breaks, and 5 minute runtime breaks:
 
 ```bash
 ROUNDS=3 \
@@ -211,11 +271,15 @@ Each run is saved under `results/<run-id>`.
 The main files are:
 
 ```text
-settings.txt       Benchmark parameters and timestamps
+settings.txt       Benchmark parameters, the benchmark profile, and timestamps
 schedule.csv       Runtime order and endpoint order
 metrics.csv        One parsed row per runtime, endpoint, and round
 summary.csv        Averages, standard deviation, ranges, P99, and timeouts
 ```
+
+Each `run-N` folder also holds `app-config.txt`, the session, cache, and
+database drivers read out of that container's compiled config cache. It is the
+only run-time evidence of which benchmark profile produced a number.
 
 Each runtime also gets a directory with one `run-N` folder per round. These folders contain the raw `wrk` output for every endpoint, runtime metadata, image information, readiness output, and timestamps.
 
@@ -251,4 +315,10 @@ The throughput charts show the three run average and the lowest and highest run.
 
 The benchmark is designed to compare runtime configurations, not to predict production capacity for every server. Results can change with the host processor, operating system, Docker version, background tasks, database engine, worker count, and traffic pattern.
 
-For a thermal controlled comparison, keep the room conditions stable and use the cooldown variables consistently for every runtime. A profile with endpoint breaks measures separate traffic bursts. A sustained load test without breaks answers a different question and should be treated as a separate benchmark.
+For a thermal controlled comparison, keep the room conditions stable and use the cooldown variables consistently for every runtime. A schedule with endpoint breaks measures separate traffic bursts. A sustained load test without breaks answers a different question and should be treated as a separate benchmark.
+
+Results from the two benchmark profiles are not comparable with each other and
+should never be mixed in one table. `BENCH_PROFILE=upstream` and
+`BENCH_PROFILE=runtime` measure different bottlenecks, which is the point of
+having both. Every recorded run states its profile in `settings.txt`, and each
+round proves it in `app-config.txt`.

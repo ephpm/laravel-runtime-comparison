@@ -1,0 +1,69 @@
+{
+    "_comment": [
+        "Composer overlay merged into app/composer.json inside the ephpm-worker image only.",
+        "The other runtime images are untouched and keep the shared composer.json/composer.lock.",
+        "",
+        "ephpm packages are distributed via their GitHub repositories, not Packagist.",
+        "They are declared here as inline 'package' repositories rather than 'vcs'",
+        "repositories for one specific reason: ephpm/octane-driver v0.1.1 declares",
+        "'laravel/framework': '^10 || ^11 || ^12' and 'symfony/http-foundation': '^6 || ^7',",
+        "while this benchmark app is pinned to laravel/framework v13.25.0 and",
+        "symfony/http-foundation v8.1.4. A plain 'vcs' require would be refused by the",
+        "solver. The inline definitions below therefore omit those two framework",
+        "constraints and keep only the dependency that actually has to resolve",
+        "(ephpm/worker). The driver's own code is used unmodified, straight from the",
+        "v0.1.1 tag. This relaxation is a benchmark-harness decision and is recorded in",
+        "RESULTS-EPHPM.md; it is not an upstream compatibility claim."
+    ],
+    "repositories": {
+        "ephpm-worker-sdk": {
+            "type": "package",
+            "package": {
+                "name": "ephpm/worker",
+                "version": "0.1.1",
+                "type": "library",
+                "license": "MIT",
+                "require": {
+                    "php": "^8.2"
+                },
+                "autoload": {
+                    "psr-4": {
+                        "Ephpm\\Worker\\": "src/"
+                    }
+                },
+                "dist": {
+                    "type": "zip",
+                    "url": "https://github.com/ephpm/php-worker/archive/refs/tags/v0.1.1.zip"
+                }
+            }
+        },
+        "ephpm-octane-driver": {
+            "type": "package",
+            "package": {
+                "name": "ephpm/octane-driver",
+                "version": "0.1.1",
+                "type": "library",
+                "license": "MIT",
+                "require": {
+                    "php": "^8.2",
+                    "ephpm/worker": "^0.1"
+                },
+                "autoload": {
+                    "psr-4": {
+                        "Ephpm\\Octane\\": "src/"
+                    }
+                },
+                "bin": [
+                    "bin/ephpm-octane-worker"
+                ],
+                "dist": {
+                    "type": "zip",
+                    "url": "https://github.com/ephpm/octane-driver/archive/refs/tags/v0.1.1.zip"
+                }
+            }
+        }
+    },
+    "require": {
+        "ephpm/octane-driver": "0.1.1"
+    }
+}

@@ -1,0 +1,42 @@
+# ePHPm persistent worker mode: the app is bootstrapped once per worker and
+# each request is dispatched into an already-booted Laravel, the same model the
+# Octane runtimes (FrankenPHP, Swoole, OpenSwoole, RoadRunner) use. This entry
+# belongs in the worker class, not next to the per-request runtimes.
+#
+# The worker entrypoint is Laravel Octane's own worker loop, driven through
+# ephpm/octane-driver's implementation of Laravel\Octane\Contracts\Client, so
+# the framework-side request lifecycle is Octane's in both cases.
+#
+# Storage is stock pdo_sqlite against the same seeded database file as every
+# other runtime. ePHPm's embedded Turso engine and litewire proxy are not used.
+
+[server]
+listen = "0.0.0.0:8000"
+document_root = "/var/www/html/public"
+
+[server.metrics]
+enabled = false
+
+[php]
+mode = "worker"
+
+# Resolved relative to document_root. ephpm/octane-driver ships this as a
+# console entrypoint; the Dockerfile copies it under public/ because ePHPm
+# requires the worker script to live inside the document root.
+worker_script = "ephpm-octane-worker.php"
+
+# Matches `octane:start --workers=2` on every other worker-class runtime.
+worker_count = 2
+
+# Pinned to PHP's stock 128M, which is what the other five images run with.
+php_memory_limit = "128M"
+
+opcache_validate_timestamps = false
+opcache_memory_consumption = 128
+opcache_interned_strings_buffer = 16
+opcache_max_accelerated_files = 20000
+opcache_jit = "disable"
+opcache_jit_buffer_size = 0
+
+realpath_cache_size = "4096K"
+realpath_cache_ttl = 600

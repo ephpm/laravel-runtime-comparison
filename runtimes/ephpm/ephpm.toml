@@ -1,0 +1,43 @@
+# ePHPm classic (per-request) configuration for the benchmark.
+#
+# The OPcache and realpath block mirrors runtimes/php.ini one directive at a
+# time. ePHPm embeds PHP and generates its own php.ini at startup, so the
+# shared ini file is expressed through ePHPm's own typed knobs rather than
+# copied in. Every value below is pinned explicitly so ePHPm's autotuning
+# cannot hand this runtime a larger budget than the other five get.
+#
+# The database is stock pdo_sqlite reading app/database/database.sqlite, the
+# same file and the same driver every other runtime uses. ePHPm's embedded
+# Turso engine and its litewire wire-protocol proxy are deliberately NOT
+# enabled here: this benchmark compares HTTP request handling, so the storage
+# path is held constant across all runtimes.
+
+[server]
+listen = "0.0.0.0:8000"
+document_root = "/var/www/html/public"
+
+[server.metrics]
+enabled = false
+
+[php]
+mode = "fpm"
+
+# php-fpm's `pm.max_children = 2` equivalent: two concurrent PHP execution
+# slots, matching the two static FPM children and the Octane `--workers=2`
+# sizing every other runtime in this benchmark uses.
+workers = 2
+
+# Pinned to PHP's stock 128M, which is what the other five images run with.
+# Left unset, ePHPm's serve-mode autotuner derives a much larger per-request
+# limit from host RAM.
+php_memory_limit = "128M"
+
+opcache_validate_timestamps = false
+opcache_memory_consumption = 128
+opcache_interned_strings_buffer = 16
+opcache_max_accelerated_files = 20000
+opcache_jit = "disable"
+opcache_jit_buffer_size = 0
+
+realpath_cache_size = "4096K"
+realpath_cache_ttl = 600

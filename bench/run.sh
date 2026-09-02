@@ -16,6 +16,10 @@ RESULT_ROOT="${RESULT_ROOT:-$ROOT_DIR/results}"
 RESULT_DIR="$RESULT_ROOT/$RUN_ID"
 RUNTIME_LIST=""
 
+# Container engine. Defaults to Docker Compose v2. Set COMPOSE_CMD to run the
+# suite under a different engine, for example COMPOSE_CMD="podman compose".
+read -r -a COMPOSE <<< "${COMPOSE_CMD:-docker compose}"
+
 runtime_port() {
   case "$1" in
     frankenphp) printf '8081' ;;
@@ -23,13 +27,25 @@ runtime_port() {
     openswoole) printf '8083' ;;
     roadrunner) printf '8084' ;;
     nginx-fpm) printf '8085' ;;
+    ephpm) printf '8086' ;;
+    ephpm-worker) printf '8087' ;;
     *) return 1 ;;
+  esac
+}
+
+# Command that runs the embedded PHP CLI inside a runtime's container. ePHPm
+# links PHP into its own binary and ships no standalone php executable, so its
+# runtime metadata is captured through the `ephpm php` subcommand instead.
+runtime_php_command() {
+  case "$1" in
+    ephpm | ephpm-worker) printf 'ephpm php' ;;
+    *) printf 'php' ;;
   esac
 }
 
 runtime_order_for_round() {
   local round="$1"
-  local runtimes=(frankenphp swoole openswoole roadrunner nginx-fpm)
+  local runtimes=(frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker)
   local count="${#runtimes[@]}"
   local offset=$(( (round - 1) % count ))
   local index=0
@@ -55,7 +71,7 @@ endpoint_order_for_round() {
 
 usage() {
   printf 'Usage: %s [runtime|all]\n' "$0"
-  printf 'Runtime values: frankenphp swoole openswoole roadrunner nginx-fpm\n'
+  printf 'Runtime values: frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker\n'
   printf 'Defaults: ROUNDS=3 DURATION=30s THREADS=10 CONNECTIONS=100 TIMEOUT=5s WARMUP_REQUESTS=100 COOLDOWN=900.\n'
 }
 
@@ -76,9 +92,9 @@ prepare_runtime() {
   local compose="$ROOT_DIR/runtimes/$runtime/docker-compose.yml"
 
   printf '  build: %s\n' "$runtime"
-  docker compose -f "$compose" build
+  "${COMPOSE[@]}" -f "$compose" build
   if [[ "$runtime" == "nginx-fpm" ]]; then
-    docker compose -f "$compose" pull nginx
+    "${COMPOSE[@]}" -f "$compose" pull nginx
   fi
 }
 
@@ -95,6 +111,7 @@ run_one() {
   local warmup
   local ready=0
   local attempt
+  local php_command
 
   port="$(runtime_port "$runtime")"
   endpoint_order="$(endpoint_order_for_round "$round")"
@@ -106,8 +123,8 @@ run_one() {
   mkdir -p "$run_dir"
   printf '\n==> round %s/%s: %s (port %s)\n' "$round" "$ROUNDS" "$runtime" "$port"
   date -u +%Y-%m-%dT%H:%M:%SZ > "$run_dir/started-at.txt"
-  docker compose -f "$compose" up -d --no-build
-  trap 'docker compose -f "$compose" down --remove-orphans' RETURN
+  "${COMPOSE[@]}" -f "$compose" up -d --no-build
+  trap '"${COMPOSE[@]}" -f "$compose" down --remove-orphans' RETURN
 
   for attempt in $(seq 1 60); do
     if curl --silent --fail "http://127.0.0.1:$port/api/static" >/dev/null; then
@@ -127,10 +144,13 @@ run_one() {
     service="php"
   fi
 
-  docker compose -f "$compose" images > "$run_dir/images.txt"
-  docker compose -f "$compose" exec -T "$service" sh -c \
-    'php -v; printf "\nExtensions:\n"; php -m; printf "\nOPcache:\n"; php --ri "Zend OPcache"' \
-    > "$run_dir/php-runtime.txt"
+  "${COMPOSE[@]}" -f "$compose" images > "$run_dir/images.txt"
+  php_command="$(runtime_php_command "$runtime")"
+  # Metadata capture is best effort: a runtime that reports its build
+  # differently must not abort a measurement that is otherwise valid.
+  "${COMPOSE[@]}" -f "$compose" exec -T "$service" sh -c \
+    "$php_command -v; printf '\nExtensions:\n'; $php_command -m; printf '\nOPcache:\n'; $php_command --ri 'Zend OPcache'" \
+    > "$run_dir/php-runtime.txt" 2>&1 || printf 'metadata capture failed for %s\n' "$runtime" >> "$run_dir/php-runtime.txt"
 
   for endpoint in $endpoint_order; do
     url="http://127.0.0.1:$port/api/$endpoint"
@@ -213,7 +233,7 @@ has_incomplete_tests() {
   return 1
 }
 
-command -v docker >/dev/null || { printf 'docker is required\n' >&2; exit 1; }
+command -v "${COMPOSE[0]}" >/dev/null || { printf '%s is required\n' "${COMPOSE[0]}" >&2; exit 1; }
 command -v curl >/dev/null || { printf 'curl is required\n' >&2; exit 1; }
 command -v wrk >/dev/null || { printf 'wrk is required\n' >&2; exit 1; }
 
@@ -233,7 +253,7 @@ write_schedule
 
 printf 'Preparing runtime images before measurements...\n'
 if [[ "$RUNTIME_LIST" == "all" ]]; then
-  for runtime in frankenphp swoole openswoole roadrunner nginx-fpm; do
+  for runtime in frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker; do
     prepare_runtime "$runtime"
   done
 else

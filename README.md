@@ -2,7 +2,7 @@
 
 # Laravel Runtime Benchmark
 
-This repository provides a repeatable benchmark for one Laravel application running on five PHP server setups:
+This repository provides a repeatable benchmark for one Laravel application running on seven PHP server setups:
 
 1. FrankenPHP
 
@@ -13,6 +13,14 @@ This repository provides a repeatable benchmark for one Laravel application runn
 4. RoadRunner
 
 5. Nginx with PHP FPM
+
+6. ePHPm in per-request mode
+
+7. ePHPm in persistent worker mode
+
+The two ePHPm entries are additions in this fork. See `RESULTS-EPHPM.md` for
+how they are configured, what had to be relaxed to install the Octane driver,
+and a recorded run of all seven setups.
 
 Every setup uses the same Laravel source, Composer lock file, database schema, seed data, endpoints, worker count, and OPcache configuration. Docker base images are pinned with digest values so that a later build does not silently pull a different image.
 
@@ -68,6 +76,27 @@ The FrankenPHP, Swoole, OpenSwoole, and RoadRunner setups use Laravel Octane wit
 
 The Nginx setup uses Nginx in front of PHP FPM with two static PHP FPM children.
 
+The `ephpm` setup runs ePHPm in its per-request mode with two concurrent PHP
+execution slots, which is ePHPm's equivalent of `pm.max_children = 2`. It runs a
+full PHP request startup and shutdown per request, so it belongs in the same
+class as the Nginx with PHP FPM setup.
+
+The `ephpm-worker` setup runs ePHPm in persistent worker mode with two workers,
+driven by Laravel Octane through the `ephpm/octane-driver` package. It boots the
+framework once per worker, so it belongs in the same class as the four Octane
+setups.
+
+Both ePHPm setups use the published `ephpm/ephpm:v0.8.7-php8.4` image, use stock
+`pdo_sqlite` against the same seeded database file as every other runtime, and
+pin the same OPcache directives as `runtimes/php.ini`. ePHPm's embedded Turso
+database engine is deliberately not used, so the storage path stays identical
+across all seven setups.
+
+Because ePHPm links PHP into its own binary and ships no separate `php` or
+`composer` executable, both ePHPm images build the Laravel vendor tree and the
+seeded database in a build stage that uses the same pinned `php:8.4-cli-alpine`
+and Composer digests as the Swoole, OpenSwoole, and RoadRunner images.
+
 All setups enable OPcache. JIT is disabled in the shared PHP configuration. The application is seeded with 100 users and 1,000 products in a SQLite database during the Docker image build.
 
 The runtime Dockerfiles copy the same `app/composer.json` and `app/composer.lock` files. This keeps the Laravel dependency set identical across all images.
@@ -118,7 +147,16 @@ bash bench/run.sh swoole
 bash bench/run.sh openswoole
 bash bench/run.sh roadrunner
 bash bench/run.sh nginx-fpm
+bash bench/run.sh ephpm
+bash bench/run.sh ephpm-worker
 bash bench/run.sh all
+```
+
+The runner and the smoke check use Docker Compose v2 by default. To run the
+suite under another OCI engine, set `COMPOSE_CMD`:
+
+```bash
+COMPOSE_CMD="podman compose" bash bench/run.sh all
 ```
 
 The runner supports these environment variables:

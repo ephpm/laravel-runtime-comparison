@@ -14,6 +14,8 @@ RUNTIME_NAMES = {
     "openswoole": "OpenSwoole",
     "roadrunner": "RoadRunner",
     "nginx-fpm": "Nginx with PHP FPM",
+    "ephpm": "ePHPm (per-request)",
+    "ephpm-worker": "ePHPm (worker)",
 }
 ENDPOINT_NAMES = {
     "db": "Database",
@@ -84,7 +86,7 @@ def throughput_chart(endpoint, rows, output_dir, run_id):
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
         '<rect width="900" height="455" fill="#ffffff"/>',
         f'<title id="title">{ENDPOINT_NAMES[endpoint]} endpoint throughput</title>',
-        '<desc id="desc">Average requests per second for five PHP runtimes. Thin lines show the lowest and highest result from three runs.</desc>',
+        '<desc id="desc">Average requests per second for each PHP runtime. Thin lines show the lowest and highest result from three runs.</desc>',
         svg_text(35, 44, f'{ENDPOINT_NAMES[endpoint]} endpoint throughput', 25, 500),
         svg_text(35, 73, "Average requests per second across three runs", 15, 400, fill="#5f6368"),
         svg_text(35, 96, "Thin lines show the lowest and highest run", 13, 400, fill="#5f6368"),
@@ -140,7 +142,7 @@ def tail_latency_chart(rows, output_dir, run_id):
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
         '<rect width="900" height="710" fill="#ffffff"/>',
         '<title id="title">Tail latency by endpoint</title>',
-        '<desc id="desc">Average 99th percentile latency for five PHP runtimes across three runs. Lower values are better.</desc>',
+        '<desc id="desc">Average 99th percentile latency for each PHP runtime across three runs. Lower values are better.</desc>',
         svg_text(35, 44, "Tail latency by endpoint", 25, 500),
         svg_text(35, 73, "Average P99 latency in milliseconds across three runs. Lower is better.", 15, 400, fill="#5f6368"),
     ]

@@ -11,7 +11,7 @@ SUMMARY="$RESULT_DIR/summary.csv"
 [[ -d "$RESULT_DIR" ]] || { printf 'Result directory not found: %s\n' "$RESULT_DIR" >&2; exit 1; }
 
 printf 'runtime,endpoint,run,requests_per_sec,avg_latency_ms,p99_latency_ms,timeout_errors\n' > "$RAW"
-for runtime in frankenphp swoole openswoole roadrunner nginx-fpm; do
+for runtime in frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker; do
   for run_path in "$RESULT_DIR/$runtime"/run-*; do
     [[ -d "$run_path" ]] || continue
     run="${run_path##*-}"

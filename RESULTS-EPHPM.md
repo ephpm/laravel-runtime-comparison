@@ -271,6 +271,75 @@ database endpoint moves 12 points in one direction and its P99 goes from beating
 Nginx + PHP FPM (157 vs 173 ms in the first recording) to losing to it (288 vs
 225 ms here). That is the one per-request result worth chasing upstream.
 
+## `worker_backlog` sweep — harness support, no numbers yet
+
+PR #443 made worker-mode dispatch admission FIFO-fair but left the queue
+*depth* at its default: `[php] worker_backlog = 0` means "= `worker_count`", so
+with `worker_count = 2` the admission gate holds two permits. Whether a deeper
+queue buys anything is an open question — the obvious counter-argument is that
+this is a closed-loop test, so at saturation mean latency is pinned to
+`connections / throughput` (100 / 2,147 = 46.6 ms, which is exactly the
+measured mean) and queue depth can only move where a request waits, not how
+long. A sweep was set up but **not recorded**; the harness support is committed
+so it is one command away.
+
+To run it:
+
+```bash
+# One image, pinned across every arm; depth comes from the environment.
+SKIP_BUILD=1 WORKER_BACKLOG=8 RUN_ID=sweep-b8 bash bench/run.sh ephpm-worker
+```
+
+`runtimes/ephpm-worker/docker-compose.yml` forwards `WORKER_BACKLOG` as
+`EPHPM_PHP__WORKER_BACKLOG`, so depth is a pure environment override and the
+image stays byte-identical between arms. Confirm it landed by looking for
+`backlog=` in the container's `worker pool started` log line — the value is
+echoed there. `SKIP_BUILD=1` exists because podman does not reliably cache a
+cross-stage `COPY --from=build`: re-running `compose build` between arms mints
+a new image ID from unchanged inputs, which is a variable a config-only sweep
+should not have.
+
+Two things to note when reading `ephpm_worker_request_wait_seconds` for this:
+it times `WorkerPool::dispatch()`, which is the *admission* wait plus a
+non-blocking `try_send` — it does **not** cover the time the job then sits in
+the dispatch channel. Raising the backlog hands out permits sooner and moves
+wait out of the metered segment into an unmetered one, so a fall in that metric
+is not on its own a latency win. And in worker mode `[php] overload_policy =
+"shed"` is explicitly ignored (the server warns at startup), so the
+"shallow queue sheds sooner" argument for keeping the default low applies to
+the experimental `fpm_engine = "pool"` path, not to worker mode.
+
+### Caveat that cost a session: rebuilding re-bakes the session driver
+
+The `array` session/cache setting that the supplementary run depends on is an
+**uncommitted** edit to `app/.env.example`, and the Dockerfiles bake it in with
+`php artisan config:cache`. An image therefore runs whatever driver the tree
+had *when that image was built*, which need not be what the tree says now and
+is not visible in any config file at run time.
+
+Rebuilding against a tree that had `SESSION_DRIVER=database` silently
+reintroduces the SQLite session-write lock. The failure does not look like a
+config problem:
+
+- every runtime collapses together (FrankenPHP 1,863 -> 116 req/s, ePHPm worker
+  2,147 -> 30-70 req/s), so the comparison still looks internally fair;
+- throughput stops scaling with concurrency (c1 130 req/s, c100 197 req/s) —
+  the tell that it is serialization, not slow request handling;
+- it survives restarting the container engine, because it is baked into a
+  layer;
+- **a control runtime that was also rebuilt collapses with the subject**, which
+  reads as "the host died" rather than "the config changed". A control only
+  controls for what it does not share; a shared rebuild is shared.
+
+`bench/run.sh` now records the effective drivers per run in
+`app-config.txt`, read out of the compiled config cache inside the container,
+so every result directory says which regime produced it. Check it before
+trusting any number:
+
+```
+session.driver=array cache.default=array db.default=sqlite
+```
+
 ## First recording — `ephpm/ephpm:v0.8.7-php8.4`
 
 Kept as recorded. This is what the v0.8.7 release measures.

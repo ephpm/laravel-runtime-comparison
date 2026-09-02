@@ -91,6 +91,16 @@ prepare_runtime() {
   local runtime="$1"
   local compose="$ROOT_DIR/runtimes/$runtime/docker-compose.yml"
 
+  # SKIP_BUILD=1 measures against whatever image is already tagged. Needed for
+  # config-only sweeps: podman does not cache a cross-stage `COPY --from=build`
+  # reliably, so re-running `compose build` between arms mints a new image ID
+  # from unchanged inputs. That is a variable the sweep is not trying to
+  # measure, so the image is built once up front and pinned for every arm.
+  if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
+    printf '  build: %s (skipped, SKIP_BUILD=1)\n' "$runtime"
+    return 0
+  fi
+
   printf '  build: %s\n' "$runtime"
   "${COMPOSE[@]}" -f "$compose" build
   if [[ "$runtime" == "nginx-fpm" ]]; then
@@ -151,6 +161,27 @@ run_one() {
   "${COMPOSE[@]}" -f "$compose" exec -T "$service" sh -c \
     "$php_command -v; printf '\nExtensions:\n'; $php_command -m; printf '\nOPcache:\n'; $php_command --ri 'Zend OPcache'" \
     > "$run_dir/php-runtime.txt" 2>&1 || printf 'metadata capture failed for %s\n' "$runtime" >> "$run_dir/php-runtime.txt"
+
+  # Which session/cache driver this image ACTUALLY runs, read out of the
+  # compiled config cache inside the container.
+  #
+  # This is not paranoia. The array-driver setting lives in app/.env.example,
+  # is baked in at build time by `php artisan config:cache`, and is normally an
+  # uncommitted edit -- so an image's driver is whatever the tree said when it
+  # was built, which need not be what the tree says now. Building against a
+  # tree that had SESSION_DRIVER=database silently reintroduces the SQLite
+  # session-write lock: every runtime collapses by 10-60x, together, and an
+  # untouched-looking control that was also rebuilt collapses with them, so it
+  # reads as a dead host rather than a config change. Recording it per run
+  # makes every result directory self-describing.
+  # Single-quoted for the inner shell; the snippet itself contains no single
+  # quotes, so it survives the nesting intact.
+  config_probe='$c = require "/var/www/html/bootstrap/cache/config.php"; printf("session.driver=%s cache.default=%s db.default=%s\n", $c["session"]["driver"], $c["cache"]["default"], $c["database"]["default"]);'
+  "${COMPOSE[@]}" -f "$compose" exec -T "$service" \
+    sh -c "$php_command -r '$config_probe'" \
+    > "$run_dir/app-config.txt" 2>&1 \
+    || printf 'app config capture failed for %s\n' "$runtime" >> "$run_dir/app-config.txt"
+  printf '    app config: %s\n' "$(tr '\n' ' ' < "$run_dir/app-config.txt")"
 
   for endpoint in $endpoint_order; do
     url="http://127.0.0.1:$port/api/$endpoint"

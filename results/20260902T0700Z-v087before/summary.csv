@@ -1,0 +1,9 @@
+runtime,endpoint,runs,avg_requests_per_sec,stddev_requests_per_sec,min_requests_per_sec,max_requests_per_sec,avg_latency_ms,avg_p99_latency_ms,max_p99_latency_ms,total_timeout_errors
+ephpm,cpu,3,910.74,14.60,895.54,924.65,109.57,123.60,125.66,0
+ephpm,db,3,661.53,24.32,642.60,688.96,150.86,176.70,195.82,0
+ephpm,health,3,923.70,23.63,896.65,940.31,108.09,134.93,155.19,0
+ephpm,static,3,923.11,20.13,900.51,939.09,108.14,124.57,141.64,0
+ephpm-worker,cpu,3,2131.96,146.95,1964.68,2240.22,50.58,172.01,194.70,0
+ephpm-worker,db,3,1452.69,106.68,1332.71,1536.87,73.05,242.49,305.23,0
+ephpm-worker,health,3,2210.57,114.04,2083.54,2304.12,48.51,164.40,182.62,0
+ephpm-worker,static,3,2225.71,73.04,2144.62,2286.34,47.99,159.03,164.72,0

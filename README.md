@@ -20,7 +20,7 @@ This repository provides a repeatable benchmark for one Laravel application runn
 
 The two ePHPm entries are additions in this fork. See `RESULTS-EPHPM.md` for
 how they are configured, what had to be relaxed to install the Octane driver,
-and a recorded run of all seven setups.
+and two recorded runs of all seven setups.
 
 Every setup uses the same Laravel source, Composer lock file, database schema, seed data, endpoints, worker count, and OPcache configuration. Docker base images are pinned with digest values so that a later build does not silently pull a different image.
 
@@ -63,6 +63,8 @@ app/                  Laravel application and Composer files
 bench/run.sh          Benchmark runner
 bench/smoke.sh        Docker Compose configuration checks
 bench/summarize.sh    Raw output parser and summary generator
+bench/select-ephpm-binary.sh
+                      Chooses which ephpm binary the two ePHPm images run
 bench/generate-charts.py
                       SVG chart generator
 runtimes/             Dockerfiles and Compose files for each setup
@@ -86,11 +88,25 @@ driven by Laravel Octane through the `ephpm/octane-driver` package. It boots the
 framework once per worker, so it belongs in the same class as the four Octane
 setups.
 
-Both ePHPm setups use the published `ephpm/ephpm:v0.8.7-php8.4` image, use stock
-`pdo_sqlite` against the same seeded database file as every other runtime, and
-pin the same OPcache directives as `runtimes/php.ini`. ePHPm's embedded Turso
-database engine is deliberately not used, so the storage path stays identical
-across all seven setups.
+Both ePHPm setups build `FROM` the published `ephpm/ephpm:v0.8.7-php8.4` image,
+use stock `pdo_sqlite` against the same seeded database file as every other
+runtime, and pin the same OPcache directives as `runtimes/php.ini`. ePHPm's
+embedded Turso database engine is deliberately not used, so the storage path
+stays identical across all seven setups.
+
+Which ePHPm binary those two images actually run is chosen by
+`bench/select-ephpm-binary.sh`, whose output both Dockerfiles copy over
+`/usr/local/bin/ephpm` as their last layer:
+
+```bash
+bash bench/select-ephpm-binary.sh published            # the base image's own binary
+bash bench/select-ephpm-binary.sh /path/to/built/ephpm # a locally built binary
+```
+
+`published` copies the base image's binary back over itself, so the image is
+byte-equivalent to using the published image unmodified. Everything else about
+the image is identical either way, which makes "which ephpm build" a
+single-variable comparison. See `RESULTS-EPHPM.md`.
 
 Because ePHPm links PHP into its own binary and ships no separate `php` or
 `composer` executable, both ePHPm images build the Laravel vendor tree and the

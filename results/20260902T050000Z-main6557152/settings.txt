@@ -1,0 +1,12 @@
+run_id=20260902T050000Z-main6557152
+rounds=3
+duration=30s
+threads=10
+connections=100
+timeout=5s
+warmup_requests=100
+cooldown_seconds=60
+endpoint_cooldown_seconds=0
+initial_cooldown_seconds=60
+started_at=2026-09-02T06:09:44Z
+finished_at=2026-09-02T06:20:22Z

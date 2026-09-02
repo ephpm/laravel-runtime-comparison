@@ -1,3 +1,6 @@
 /results
 /docs
 /.idea
+# Locally built ephpm binary copied into the ephpm images (see RESULTS-EPHPM.md,
+# "second recording"). ~100 MB -- never committed.
+/runtimes/ephpm-bin/

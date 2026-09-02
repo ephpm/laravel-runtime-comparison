@@ -34,5 +34,12 @@ COPY --from=build /var/www/html /var/www/html
 COPY runtimes/ephpm/ephpm.toml /etc/ephpm/ephpm.toml
 RUN chmod -R a+rwX storage bootstrap/cache database
 
+# The ephpm binary under test, overwriting the one the base image ships. See
+# the same block in runtimes/ephpm-worker/Dockerfile. PR #443 touches
+# fpm_pool.rs as well as worker_pool.rs, so this per-request entry is on the
+# same dispatch-admission path as the worker entry.
+# Populate runtimes/ephpm-bin/ephpm with bench/select-ephpm-binary.sh.
+COPY runtimes/ephpm-bin/ephpm /usr/local/bin/ephpm
+
 EXPOSE 8000
 CMD ["ephpm", "serve", "--config", "/etc/ephpm/ephpm.toml"]

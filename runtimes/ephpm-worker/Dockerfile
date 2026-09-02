@@ -47,5 +47,13 @@ COPY --from=build /var/www/html /var/www/html
 COPY runtimes/ephpm-worker/ephpm.toml /etc/ephpm/ephpm.toml
 RUN chmod -R a+rwX storage bootstrap/cache database
 
+# The ephpm binary under test, overwriting the one the base image ships.
+# Nothing else about the image changes -- same debian:12-slim base, same
+# layers, same entrypoint -- so the binary is the only variable between the
+# "before" and "after" legs of the second recording. Last layer on purpose:
+# swapping it rebuilds one small layer, not the vendor tree above it.
+# Populate runtimes/ephpm-bin/ephpm with bench/select-ephpm-binary.sh.
+COPY runtimes/ephpm-bin/ephpm /usr/local/bin/ephpm
+
 EXPOSE 8000
 CMD ["ephpm", "serve", "--config", "/etc/ephpm/ephpm.toml"]

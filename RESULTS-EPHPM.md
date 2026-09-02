@@ -1,28 +1,74 @@
 # ePHPm in the Laravel runtime benchmark
 
 This fork adds two [ePHPm](https://github.com/ephpm/ephpm) entries to the
-benchmark and records a run of all seven setups. The app, the endpoints, the
+benchmark and records runs of all seven setups. The app, the endpoints, the
 `wrk` parameters, and the harness are upstream's; the additions are
-`runtimes/ephpm/`, `runtimes/ephpm-worker/`, and the plumbing to list two more
-runtimes and to run the suite under a non-Docker engine.
+`runtimes/ephpm/`, `runtimes/ephpm-worker/`, `bench/select-ephpm-binary.sh`,
+and the plumbing to list two more runtimes and to run the suite under a
+non-Docker engine.
+
+There are **two recordings**. Both are kept, because they measure different
+ePHPm builds and the difference between them is the point:
+
+| Recording | Date | ePHPm build | Shape |
+| --- | --- | --- | --- |
+| **First** | 2026-09-02 (UTC) | `ephpm/ephpm:v0.8.7-php8.4`, unmodified | primary 3 x 30s + supplementary 1 x 20s |
+| **Second** | 2026-09-02 (UTC), later | ePHPm `main` @ `6557152` | 3 x 30s, plus a v0.8.7 "before" leg |
+
+Everything not ePHPm is identical between them.
 
 ## Verdict
 
-**Worker class.** ePHPm worker mode was the fastest runtime measured, about
-19% ahead of FrankenPHP and 27% ahead of Swoole on throughput. It also had the
-*worst* tail latency of the fast group: its P99 was roughly 2.5-3x FrankenPHP's.
-It wins on throughput and loses on P99, and both halves of that belong in any
-honest summary.
+### Worker class — second recording
 
-**Per-request class.** ePHPm per-request and Nginx + PHP FPM are effectively
-tied. ePHPm was ~10% ahead on the database endpoint and ~2-3% behind on the
-other three, which is inside the run-to-run noise of a single round.
+**ePHPm worker mode was the fastest runtime measured *and* had the best or
+joint-best tail latency of the group.** It is 15-19% ahead of FrankenPHP on
+throughput and ahead of it at every percentile except P99 on one endpoint:
 
-**The headline caveat.** The benchmark as configured upstream is dominated by a
-bottleneck that is not the runtime, and the default numbers therefore separate
-the runtimes very poorly. See "Two measurements, and why" below. The verdict
-above comes from the supplementary measurement, which is a single round and
-carries correspondingly lower confidence.
+| | health | static | cpu | db |
+| --- | ---: | ---: | ---: | ---: |
+| Throughput vs FrankenPHP | +18.7% | +15.2% | +16.7% | +16.3% |
+| P50 vs FrankenPHP | -15.5% | -14.3% | -14.6% | -13.4% |
+| P90 vs FrankenPHP | -17.9% | -11.2% | -14.0% | -15.2% |
+| P99 vs FrankenPHP | -5.7% | **+8.2%** | -3.8% | -17.6% |
+
+(Negative = ePHPm lower = better, for latency.)
+
+In the first recording ePHPm worker won throughput and lost the tail badly: its
+P99 was 156-202 ms against FrankenPHP's 57-80 ms, roughly 2.5-3x. That gap is
+gone. The single remaining loss is P99 on `/api/static`, where ePHPm is 66.0 ms
+against FrankenPHP's 61.0 ms — 5 ms, and inside FrankenPHP's own run-to-run
+range on the other endpoints.
+
+The change responsible is ePHPm PR
+[#443](https://github.com/ephpm/ephpm/pull/443), which replaces the dispatch
+queue's `send().await` with a FIFO-fair admission semaphore. Measured
+before/after on this harness, on the same host in the same session, it moves
+**only the tail**: P50 unchanged, P90 halved, P99 down about two thirds,
+throughput flat. That is the signature of a fairness fix rather than a speedup,
+and it is what the numbers show.
+
+### Per-request class — second recording
+
+ePHPm per-request and Nginx + PHP FPM remain effectively tied, as in the first
+recording, but ePHPm's advantage on the **database** endpoint is gone and its
+database tail widened. Against Nginx + PHP FPM: +2.8% on `health`, -5.5% on
+`static`, -2.1% on `cpu`, -2.7% on `db`. In the first recording the same
+comparison was -2.8% / -2.2% / -1.0% / **+9.7%**.
+
+The database endpoint is the one that moved outside noise. Measured against
+v0.8.7 on the same host, ePHPm per-request `/api/db` went from 662 req/s and a
+177 ms P99 to 531 req/s and a 288 ms P99. #443 touches `fpm_pool.rs` as well as
+`worker_pool.rs`, so the per-request path is on the same changed admission
+code. This is worth a follow-up in ePHPm; it is not established here, and the
+caveats below say why.
+
+### The headline caveat, unchanged
+
+The benchmark as configured upstream is dominated by a bottleneck that is not
+the runtime, and the default numbers separate the runtimes very poorly. See
+"Two measurements, and why". Both recordings' verdicts come from the
+supplementary (array sessions/cache) configuration.
 
 ## Read the two classes separately
 
@@ -69,15 +115,165 @@ the shared ceiling.
 
 ### Supplementary run: the same harness with the shared lock removed
 
-`SESSION_DRIVER=array` and `CACHE_STORE=array` in `app/.env.example`, all seven
+`SESSION_DRIVER=array` and `CACHE_STORE=array` in `app/.env.example`, all
 images rebuilt, everything else identical. `DB_CONNECTION` stays `sqlite`, so
-`/api/db` still does its four real queries. One round, 20s per endpoint.
+`/api/db` still does its four real queries.
 
 This is a deviation from upstream and is **not** committed to the repo —
-`app/.env.example` is restored to upstream's values. It is included because it
-is the only one of the two runs that actually separates the runtimes.
+`app/.env.example` is restored to upstream's values after each run. It is
+included because it is the only configuration that actually separates the
+runtimes. The **second recording is supplementary-only**: the first recording
+already established what the primary configuration measures, and re-recording
+the SQLite write lock would not say anything about a dispatch-queue change.
 
-## Results
+## Second recording — ePHPm `main` @ 6557152
+
+ePHPm commit
+[`6557152`](https://github.com/ephpm/ephpm/commit/6557152b93ee8b5e24b0f9cf265e940d721b0e9e)
+("fix(worker): FIFO-fair dispatch admission", PR #443), five commits after the
+`v0.8.7` tag. Of those five, only #443 touches the request path; the others are
+cluster write-forwarding (inactive here — no clustering), config-key
+validation, a CI change, and a docs change.
+
+Three rounds, 30s per endpoint, 10 threads, 100 connections, 100 warm-up
+requests, 60s cooldown between runtime sessions, harness runtime/endpoint
+rotation intact. Array sessions and cache. Cells are `mean [min-max]` across
+the three rounds. Zero `wrk` timeouts anywhere in this recording.
+
+### Worker class — throughput, requests/sec
+
+| Runtime | health | static | cpu | db |
+| --- | ---: | ---: | ---: | ---: |
+| **ePHPm worker (Octane)** | **2,220** <sub>[2179-2261]</sub> | **2,147** <sub>[2073-2201]</sub> | **2,149** <sub>[2050-2208]</sub> | **1,485** <sub>[1451-1515]</sub> |
+| FrankenPHP (Octane) | 1,871 <sub>[1801-1915]</sub> | 1,863 <sub>[1816-1890]</sub> | 1,841 <sub>[1806-1864]</sub> | 1,277 <sub>[1262-1290]</sub> |
+| Swoole (Octane) | 1,421 <sub>[1002-1726]</sub> | 1,666 <sub>[1621-1699]</sub> | 1,665 <sub>[1620-1692]</sub> | 1,053 <sub>[924-1221]</sub> |
+| OpenSwoole (Octane) | 1,522 <sub>[1193-1692]</sub> | 1,540 <sub>[1233-1741]</sub> | 1,550 <sub>[1367-1651]</sub> | 1,134 <sub>[984-1248]</sub> |
+| RoadRunner (Octane) | 1,233 <sub>[1222-1251]</sub> | 1,177 <sub>[1137-1213]</sub> | 1,120 <sub>[984-1193]</sub> | 899 <sub>[836-946]</sub> |
+
+### Worker class — latency, ms (lower is better)
+
+| Runtime | | health | static | cpu | db |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **ePHPm worker** | P50 | **44.6** | **45.5** | **45.8** | **67.0** |
+| | P90 | **46.4** | **49.3** | **48.6** | **69.2** |
+| | P99 | **59.5** <sub>[56.0-65.3]</sub> | 66.0 <sub>[65.5-66.6]</sub> | **61.3** <sub>[54.0-69.9]</sub> | **74.1** <sub>[70.2-79.6]</sub> |
+| FrankenPHP | P50 | 52.8 | 53.1 | 53.6 | 77.4 |
+| | P90 | 56.5 | 55.5 | 56.5 | 81.6 |
+| | P99 | 63.1 <sub>[56.0-73.5]</sub> | **61.0** <sub>[58.1-63.9]</sub> | 63.7 <sub>[61.9-66.1]</sub> | 89.9 <sub>[89.2-90.4]</sub> |
+| Swoole | P50 | 56.7 | 52.8 | 57.4 | 86.0 |
+| | P90 | 160.4 | 77.9 | 80.6 | 158.4 |
+| | P99 | 282.9 <sub>[145.6-514.0]</sub> | 142.6 <sub>[137.7-147.8]</sub> | 143.0 <sub>[136.3-150.9]</sub> | 359.4 <sub>[185.7-630.4]</sub> |
+| OpenSwoole | P50 | 54.8 | 56.3 | 57.8 | 76.3 |
+| | P90 | 107.0 | 117.8 | 94.0 | 120.1 |
+| | P99 | 208.2 <sub>[138.5-345.1]</sub> | 238.9 <sub>[134.8-440.3]</sub> | 172.7 <sub>[142.3-233.1]</sub> | 209.7 <sub>[163.8-284.8]</sub> |
+| RoadRunner | P50 | 60.3 | 66.6 | 68.9 | 89.0 |
+| | P90 | 192.5 | 151.2 | 173.7 | 201.2 |
+| | P99 | 284.2 <sub>[277.9-290.6]</sub> | 241.0 <sub>[147.2-291.1]</sub> | 246.6 <sub>[132.7-320.5]</sub> | 326.3 <sub>[280.0-379.0]</sub> |
+
+Note how far the Swoole and OpenSwoole *ranges* span: their P99 varies by 2-4x
+between rounds. Three rounds is enough to see that ePHPm worker and FrankenPHP
+are the two stable runtimes here and that everything else has a tail that moves
+round to round.
+
+### Per-request class — throughput, requests/sec
+
+| Runtime | health | static | cpu | db |
+| --- | ---: | ---: | ---: | ---: |
+| Nginx + PHP FPM | 821 <sub>[747-860]</sub> | **852** <sub>[836-870]</sub> | **826** <sub>[792-848]</sub> | **546** <sub>[521-564]</sub> |
+| **ePHPm per-request** | **844** <sub>[815-899]</sub> | 805 <sub>[778-833]</sub> | 809 <sub>[793-838]</sub> | 531 <sub>[466-574]</sub> |
+
+### Per-request class — latency, ms (lower is better)
+
+| Runtime | | health | static | cpu | db |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Nginx + PHP FPM | P50 | **116.8** | **115.7** | **118.1** | 179.9 |
+| | P90 | 130.7 | **123.2** | **131.4** | **197.4** |
+| | P99 | 377.9 <sub>[131.7-850.8]</sub> | **142.8** | **148.5** | **224.8** |
+| **ePHPm per-request** | P50 | 117.6 | 122.5 | 121.8 | **176.7** |
+| | P90 | **126.2** | 134.7 | 132.0 | 245.4 |
+| | P99 | **139.2** <sub>[125.3-160.2]</sub> | 151.0 | 155.1 | 287.7 |
+
+The Nginx + PHP FPM `health` P99 of 377.9 ms is one round of 850.8 ms averaged
+with two rounds of 131.7 and 151.1 ms — a single-round outlier, not a
+characteristic. It is left in rather than dropped.
+
+## Before and after: what PR #443 changed
+
+Same host, same session, same images, same `wrk` shape. The only difference is
+the file at `/usr/local/bin/ephpm`: `bench/select-ephpm-binary.sh` copies either
+the locally built `main` binary or the base image's own v0.8.7 binary over it,
+as the last layer of an otherwise byte-identical image. Three rounds each.
+
+### ePHPm worker mode
+
+| | | health | static | cpu | db |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **req/s** | v0.8.7 | 2,211 | 2,226 | 2,132 | 1,453 |
+| | main @ 6557152 | 2,220 | 2,147 | 2,149 | 1,485 |
+| | change | +0.4% | -3.5% | +0.8% | +2.2% |
+| **P50 ms** | v0.8.7 | 45.2 | 45.4 | 46.7 | 67.4 |
+| | main @ 6557152 | 44.6 | 45.5 | 45.8 | 67.0 |
+| | change | -1.3% | +0.2% | -1.9% | -0.6% |
+| **P90 ms** | v0.8.7 | 91.2 | 90.4 | 94.9 | 135.5 |
+| | main @ 6557152 | 46.4 | 49.3 | 48.6 | 69.2 |
+| | change | **-49%** | **-45%** | **-49%** | **-49%** |
+| **P99 ms** | v0.8.7 | 164.4 | 159.0 | 172.0 | 242.5 |
+| | main @ 6557152 | 59.5 | 66.0 | 61.3 | 74.1 |
+| | change | **-64%** | **-58%** | **-64%** | **-69%** |
+
+Throughput is flat: three of four endpoints are inside their own run-to-run
+range, and the one that is not (`static`, -3.5%) is a 79 req/s difference
+against a 128 req/s spread in the v0.8.7 leg. The median is flat to within 2%.
+P90 halves and P99 falls by roughly two thirds on every endpoint.
+
+The v0.8.7 numbers here also reproduce the first recording's supplementary run
+(P99 156.0 / 157.4 / 160.7 / 201.7 ms there, 164.4 / 159.0 / 172.0 / 242.5 ms
+here), which is the cross-check that the two recordings are measuring the same
+machine.
+
+### ePHPm per-request mode
+
+| | | health | static | cpu | db |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **req/s** | v0.8.7 | 924 | 923 | 911 | 662 |
+| | main @ 6557152 | 844 | 805 | 809 | 531 |
+| | change | -8.7% | -12.8% | -11.2% | **-19.8%** |
+| **P50 ms** | v0.8.7 | 106.8 | 107.1 | 108.8 | 149.0 |
+| | main @ 6557152 | 117.6 | 122.5 | 121.8 | 176.7 |
+| **P90 ms** | v0.8.7 | 113.8 | 113.3 | 114.4 | 159.5 |
+| | main @ 6557152 | 126.2 | 134.7 | 132.0 | 245.4 |
+| **P99 ms** | v0.8.7 | 134.9 | 124.6 | 123.6 | 176.7 |
+| | main @ 6557152 | 139.2 | 151.0 | 155.1 | 287.7 |
+
+This one needs reading carefully, and it does **not** support a clean "#443 cost
+the per-request path 10-20%" claim:
+
+- The v0.8.7 leg here was measured as three consecutive rounds of one runtime,
+  not rotated among seven, so it had a different cadence (rounds ~3 minutes
+  apart instead of ~19). Cross-runtime numbers from the two legs are not
+  directly comparable.
+- Nginx + PHP FPM, which did not change at all, is also slower in this
+  recording than the first (static 852 vs 929 req/s, db 546 vs 610). Some of
+  the drop above is the recording, not the binary. Part of that is the
+  supplementary shape: the first recording's supplementary was 20s rounds, this
+  one is 30s.
+
+The comparison that survives both objections is ePHPm per-request against
+Nginx + PHP FPM **inside one recording**, since they share cadence and session:
+
+| ePHPm per-request as % of Nginx + PHP FPM | health | static | cpu | db |
+| --- | ---: | ---: | ---: | ---: |
+| First recording (v0.8.7) | 97.2% | 97.8% | 99.0% | **109.7%** |
+| Second recording (main) | 102.8% | 94.5% | 97.9% | **97.3%** |
+
+health, static and cpu move within a few points in both directions — noise. The
+database endpoint moves 12 points in one direction and its P99 goes from beating
+Nginx + PHP FPM (157 vs 173 ms in the first recording) to losing to it (288 vs
+225 ms here). That is the one per-request result worth chasing upstream.
+
+## First recording — `ephpm/ephpm:v0.8.7-php8.4`
+
+Kept as recorded. This is what the v0.8.7 release measures.
 
 ### Supplementary run (sessions/cache = array, 1 round x 20s)
 
@@ -150,9 +346,6 @@ same database write lock.
 
 ## What was added
 
-Both entries use `ephpm/ephpm:v0.8.7-php8.4`, the newest tag on Docker Hub at
-the time of the run, matching the PHP 8.4 minor every other runtime pins.
-
 **`runtimes/ephpm`** — ePHPm's default `fpm` mode with `[php] workers = 2`,
 which caps concurrent PHP execution at two and is ePHPm's equivalent of the
 `pm.max_children = 2` the Nginx + PHP FPM image uses.
@@ -161,6 +354,22 @@ which caps concurrent PHP execution at two and is ePHPm's equivalent of the
 matching `--workers=2` on the Octane runtimes. The entrypoint is
 `ephpm/octane-driver`, which implements Laravel Octane's `Client` contract and
 drives Octane's own `Worker` loop.
+
+**`bench/select-ephpm-binary.sh`** — chooses which ePHPm binary the two images
+run. Both images are built `FROM ephpm/ephpm:v0.8.7-php8.4` and overwrite
+`/usr/local/bin/ephpm` as their **last** layer with
+`runtimes/ephpm-bin/ephpm` (gitignored). `select-ephpm-binary.sh published`
+copies the base image's own binary back over itself, so the image is
+byte-equivalent to using the published image unmodified; passing a path instead
+swaps in a locally built binary. Everything else about the image — base,
+layers, vendor tree, config, entrypoint — is identical either way, which is
+what makes the before/after leg above a single-variable comparison.
+
+For the second recording the `main` binary was built with
+`cargo xtask release 8.4` inside `ephpm/ephpm-ci:latest`, the same
+almalinux8 / glibc-2.28 container the published release binaries are built in.
+`ephpm --version` inside the running container reported
+`0.8.8-dev+main.6557152`.
 
 ## Normalisation
 
@@ -224,29 +433,50 @@ constraint the package author has not yet cleared.
 
 A developer workstation, not an isolated benchmark rig: AMD Ryzen 9 5950X
 (16C/32T), 62 GB RAM, Windows 11 running Podman 5.8.5 with crun inside a WSL2
-VM (kernel 6.18.33.2), Compose v5.5.0, `wrk` 4.2.0. `wrk` runs inside the same
-WSL2 VM as the containers, over published localhost ports. No CPU pinning — the
-upstream harness does not pin and none was added.
+VM, Compose v5.5.0, `wrk` 4.2.0. `wrk` runs inside the same WSL2 VM as the
+containers, over published localhost ports. No CPU pinning — the upstream
+harness does not pin and none was added.
 
 Rootless Podman cannot start Compose v5's privileged buildkit container, so
 images were built with `DOCKER_BUILDKIT=0`. That affects image construction
 only, not the measured request path.
 
+### The second recording's ePHPm binary is self-built
+
+The five non-ePHPm runtimes and the v0.8.7 "before" leg run published,
+digest-pinned artifacts. The `main` binary does not exist as a published
+artifact — that is the whole point of the recording — so it was compiled
+locally. It was built in `ephpm/ephpm-ci:latest`, the same container image the
+project's release workflow uses for its Linux x86-64 leg, with the same
+command (`cargo xtask release 8.4`) and the same `profile.release` (`lto =
+"fat"`, `codegen-units = 1`). It is as close to a published release binary as a
+local build gets, but it is not one, and it has not been through the project's
+release CI.
+
 ### Deviations from the documented defaults
 
 - **Cooldown.** The runner defaults to `COOLDOWN=900`, which with seven runtimes
-  and three rounds is over five hours of waiting. The primary run used
+  and three rounds is over five hours of waiting. Both recordings used
   `COOLDOWN=60`, uniform across all runtimes, with the harness's runtime-order
   and endpoint-order rotation intact.
-- **Interrupted and resumed.** The primary run was interrupted after 74 of 84
-  measurements. It was resumed with the same `RUN_ID`, which the harness
-  supports: `frankenphp` round 3, `swoole` round 3, and `ephpm-worker` round 3
-  were re-measured, the first two never having started. Those three sessions ran
-  with a longer gap before them than the 60s the others got — more cooling, not
-  less.
-- **Supplementary run** is one round of 20s, not three rounds of 30s, so it has
-  no standard deviation and correspondingly lower confidence. Treat its
-  differences under ~10% as unresolved.
+- **First recording, interrupted and resumed.** The primary run was interrupted
+  after 74 of 84 measurements and resumed with the same `RUN_ID`;
+  `frankenphp` round 3, `swoole` round 3, and `ephpm-worker` round 3 were
+  re-measured, the first two never having started.
+- **Second recording, interrupted and resumed.** The suite was killed during
+  `ephpm-worker` round 3 and resumed with the same `RUN_ID`. `ephpm-worker`,
+  `frankenphp` and `swoole` round 3 were measured after a longer-than-60s gap —
+  more cooling, not less. Every other cell ran on the normal schedule.
+- **Second recording, before-leg cadence.** The v0.8.7 "before" leg measured
+  only the two ePHPm entries, three rounds each, consecutively rather than
+  rotated among seven runtimes. Its rounds are ~3 minutes apart instead of ~19.
+  This is why the per-request before/after above is read through the
+  Nginx + PHP FPM ratio rather than directly.
+- **Supplementary duration.** The first recording's supplementary run was one
+  round of 20s; the second recording is three rounds of 30s. Absolute
+  throughput is slightly lower at 30s across every runtime, so cross-recording
+  absolute numbers should not be compared without that in mind. Within-recording
+  comparisons are unaffected.
 
 ### What this does not measure
 
@@ -259,6 +489,10 @@ only, not the measured request path.
 ## Reproducing
 
 ```bash
+# Choose which ephpm binary the two ePHPm images run.
+bash bench/select-ephpm-binary.sh published            # the base image's v0.8.7
+bash bench/select-ephpm-binary.sh /path/to/built/ephpm # a local build
+
 # Primary run, upstream harness
 COMPOSE_CMD="podman compose" \
 ROUNDS=3 COOLDOWN=60 ENDPOINT_COOLDOWN=0 INITIAL_COOLDOWN=60 \
@@ -266,9 +500,28 @@ bash bench/run.sh all
 
 # Supplementary run: first set SESSION_DRIVER=array and CACHE_STORE=array
 # in app/.env.example and rebuild all images, then
-COMPOSE_CMD="podman compose" ROUNDS=1 DURATION=20s bash bench/run.sh all
+COMPOSE_CMD="podman compose" \
+ROUNDS=3 DURATION=30s COOLDOWN=60 ENDPOINT_COOLDOWN=0 INITIAL_COOLDOWN=60 \
+bash bench/run.sh all
 ```
 
-The parsed metrics, summary, schedule, and settings for the primary run are
-committed under `results/20260902T001036Z/`; the raw `wrk` output stays
-gitignored as upstream intends.
+To build the `main` binary the way the second recording did:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w ephpm/ephpm-ci:latest \
+  cargo xtask release 8.4
+# -> target/x86_64-unknown-linux-gnu/release/ephpm
+```
+
+The parsed metrics, summary, schedule, settings, and a per-round percentile
+table are committed under `results/`; the raw `wrk` output stays gitignored as
+upstream intends. `summary.csv` is the harness's own output (average latency and
+P99 only); `percentiles.csv` is generated alongside it and carries P50/P75/P90/P99
+per runtime, endpoint and round, which is what the tail tables above are built
+from.
+
+| Run ID | What |
+| --- | --- |
+| `20260902T001036Z` | First recording, primary run |
+| `20260902T050000Z-main6557152` | Second recording, all seven runtimes on `main` @ 6557152 |
+| `20260902T0700Z-v087before` | Second recording, the two ePHPm entries on published v0.8.7 |

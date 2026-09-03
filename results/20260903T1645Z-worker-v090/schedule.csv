@@ -1,0 +1,16 @@
+sequence,round,runtime,endpoint_order
+1,1,frankenphp,db|health|static|cpu
+2,1,swoole,db|health|static|cpu
+3,1,openswoole,db|health|static|cpu
+4,1,roadrunner,db|health|static|cpu
+5,1,ephpm-worker,db|health|static|cpu
+6,2,swoole,health|static|cpu|db
+7,2,openswoole,health|static|cpu|db
+8,2,roadrunner,health|static|cpu|db
+9,2,ephpm-worker,health|static|cpu|db
+10,2,frankenphp,health|static|cpu|db
+11,3,openswoole,static|cpu|db|health
+12,3,roadrunner,static|cpu|db|health
+13,3,ephpm-worker,static|cpu|db|health
+14,3,frankenphp,static|cpu|db|health
+15,3,swoole,static|cpu|db|health

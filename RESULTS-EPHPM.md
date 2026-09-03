@@ -9,7 +9,7 @@ the additions are `runtimes/ephpm/`, `runtimes/ephpm-worker/`,
 a class rather than a single runtime, and to run the suite under a non-Docker
 engine.
 
-There are **three recordings**. All are kept, because they measure different
+There are **four recordings**. All are kept, because they measure different
 things and the differences between them are the point:
 
 | Recording | Date | ePHPm build | Shape | Profile |
@@ -17,12 +17,19 @@ things and the differences between them are the point:
 | **First** | 2026-09-02 (UTC) | `ephpm/ephpm:v0.8.7-php8.4`, unmodified | all 7 runtimes, 3 x 30s, plus a 1 x 20s second pass | `upstream`, then `runtime` |
 | **Second** | 2026-09-02 (UTC), later | ePHPm `main` @ `6557152` | all 7 runtimes, 3 x 30s, plus a v0.8.7 "before" leg | `runtime` |
 | **Third** | 2026-09-03 (UTC) | `ephpm/ephpm:v0.9.0-php8.4`, unmodified | **per-request class only** (3 runtimes incl. the new FrankenPHP classic), 3 x 30s | `runtime` |
+| **Fourth** | 2026-09-03 (UTC), later | `ephpm/ephpm:v0.9.0-php8.4`, unmodified | **worker class only** (all 5 runtimes), 3 x 30s | `runtime` |
 
-Everything not ePHPm is identical between the first two. The third measures a
-different set of runtimes on a different ePHPm build, so **it is not
-cross-comparable with the other two in absolute terms**; read it on its own and
-through its own control. The worker-class tables in this document are all from
-the second recording and are unchanged by it.
+Everything not ePHPm is identical between the first two. The third and fourth
+each measure one class on the published v0.9.0 image, so **neither is
+cross-comparable with the first two in absolute terms**; read each on its own and
+through its own control.
+
+**As of the fourth recording, every headline number in this document comes from
+a published, pullable ePHPm image.** The third recording moved the per-request
+class onto `v0.9.0` and the fourth moves the worker class; the second
+recording's tables, which are attributed to the unreleased commit `6557152`, are
+kept below as history and as the before/after for PR #443, but they are no
+longer where the verdict comes from.
 
 ## Which profile every number below came from
 
@@ -76,34 +83,60 @@ second recording's verdict (0.97x control) is not merely gone but reversed
 (1.25x). That is suggestive of a real v0.9.0 improvement; it is **not
 established** by this recording, which was not built to measure it.
 
-### Worker class — second recording
+### Worker class — fourth recording
 
-**ePHPm worker mode was the fastest runtime measured *and* had the best or
-joint-best tail latency of the group.** It is 15-19% ahead of FrankenPHP on
-throughput and ahead of it at every percentile except P99 on one endpoint:
+Numbers below are from "Fourth recording — the worker class, on ePHPm v0.9.0",
+on the published `ephpm/ephpm:v0.9.0-php8.4` image. They replace the second
+recording's worker tables as the current result; the second recording's worker
+tables are still in this document, under "Second recording", and are still what
+the PR #443 before/after is measured on.
+
+**ePHPm worker mode is the fastest runtime in the class, and the ordering is
+ePHPm, FrankenPHP, Swoole ≈ OpenSwoole, RoadRunner on all four endpoints.** It
+is 16-19% ahead of FrankenPHP on throughput and 13-17% lower at P50 and P90:
 
 | | health | static | cpu | db |
 | --- | ---: | ---: | ---: | ---: |
-| Throughput vs FrankenPHP | +18.7% | +15.2% | +16.7% | +16.3% |
-| P50 vs FrankenPHP | -15.5% | -14.3% | -14.6% | -13.4% |
-| P90 vs FrankenPHP | -17.9% | -11.2% | -14.0% | -15.2% |
-| P99 vs FrankenPHP | -5.7% | **+8.2%** | -3.8% | -17.6% |
+| Throughput vs FrankenPHP | +17.7% | +17.3% | +19.0% | +16.1% |
+| P50 vs FrankenPHP | -15.6% | -16.1% | -16.4% | -13.4% |
+| P90 vs FrankenPHP | -16.6% | -15.6% | -17.3% | -15.0% |
+| P99 vs FrankenPHP | **+4.1%** | **+11.5%** | **+0.2%** | -14.6% |
 
 (Negative = ePHPm lower = better, for latency.)
 
-In the first recording ePHPm worker won throughput and lost the tail badly: its
-P99 was 156-202 ms against FrankenPHP's 57-80 ms, roughly 2.5-3x. That gap is
-gone. The single remaining loss is P99 on `/api/static`, where ePHPm is 66.0 ms
-against FrankenPHP's 61.0 ms — 5 ms, and inside FrankenPHP's own run-to-run
-range on the other endpoints.
+**The tail is where this recording is less flattering than the second one.** On
+`main` @ `6557152` ePHPm's P99 beat FrankenPHP's on three of four endpoints; on
+published v0.9.0 it loses on three of four. Both facts are true and neither is a
+regression in absolute terms — ePHPm's own P99 improved on every endpoint across
+the two recordings (-3.2% to -7.5%). FrankenPHP's improved more (-6.0% to
+-12.4%), and that is the whole of the difference. Two honest readings, and this
+recording cannot separate them: either v0.9.0 gave ePHPm less tail headroom than
+the `main` build had, or the two recordings are simply different sessions on a
+shared workstation and the tail is the noisiest thing being measured. See "Across
+recordings" below for why the second reading is the more likely one.
 
-The change responsible is ePHPm PR
+What *is* stable across both recordings is the ratio to the control, which is
+the comparison the harness is actually built to support: ePHPm worker was
+1.15-1.19x FrankenPHP's throughput on `main` @ `6557152` and is 1.16-1.19x on
+published v0.9.0. **The headline worker-class claim survives the move to a
+released binary essentially unchanged.**
+
+That is the expected outcome rather than a surprise. The per-request class
+gained materially on v0.9.0, largely because pool-by-default replaced
+`spawn_blocking`; worker mode was already on the pool, so that change had
+nothing to give here.
+
+The change that produced the current tail was ePHPm PR
 [#443](https://github.com/ephpm/ephpm/pull/443), which replaces the dispatch
-queue's `send().await` with a FIFO-fair admission semaphore. Measured
+queue's `send().await` with a FIFO-fair admission semaphore. In the first
+recording, before it, ePHPm worker won throughput and lost the tail badly: its
+P99 was 156-202 ms against FrankenPHP's 57-80 ms, roughly 2.5-3x. Measured
 before/after on this harness, on the same host in the same session, it moves
 **only the tail**: P50 unchanged, P90 halved, P99 down about two thirds,
-throughput flat. That is the signature of a fairness fix rather than a speedup,
-and it is what the numbers show.
+throughput flat. That is the signature of a fairness fix rather than a speedup.
+The fourth recording holds that gain: ePHPm's P99 is 57.5-68.6 ms against
+FrankenPHP's 55.3-80.3 ms, which is the same neighbourhood rather than a
+multiple.
 
 ### Per-request class — second recording
 
@@ -216,6 +249,273 @@ runtimes. The **second recording is `runtime`-only**: the first recording
 already established what the `upstream` profile measures, and re-recording the
 SQLite write lock would not say anything about a dispatch-queue change.
 
+## Fourth recording — the worker class, on ePHPm v0.9.0
+
+**What this recording is for.** The third recording moved the per-request class
+onto the published `v0.9.0` image, but the worker-class tables were still from
+the second recording, on `main` @ `6557152` — an unreleased commit. Publishing
+numbers attributed to a version nobody can pull is not a defensible thing to do,
+so the worker class was re-recorded on the same published image the per-request
+class now uses. This recording exists to make the attribution honest, not to
+produce a better number, and it did not produce one.
+
+All five worker-class runtimes, three rounds, 30s per endpoint, 10 threads, 100
+connections, 100 warm-up requests, 60s cooldown between runtime sessions,
+runtime and endpoint rotation intact, `BENCH_PROFILE=runtime`. `bash
+bench/run.sh worker` measures the class as a unit. Run ID
+`20260903T1645Z-worker-v090`, 16:42:39Z to 17:29:50Z.
+
+**The ePHPm binary is the published `ephpm/ephpm:v0.9.0-php8.4`, unmodified.**
+`bench/select-ephpm-binary.sh published` copies the base image's own binary back
+over itself (SHA-256 `4e5a056b…`), so the image is byte-equivalent to running the
+published one.
+
+### What was verified before the numbers were trusted
+
+Four things, because each of them can silently invalidate a run:
+
+- **The concurrency pin took.** ePHPm's `[php] concurrency` default derives from
+  CPU count, clamped to `[2,32]`, which on this 16C/32T host would be 32 — a 16x
+  concurrency advantage over every other arm, all of which are at
+  `--workers=2`. The startup log names its own source, and it says the config
+  won:
+
+  ```
+  autotune (serve): cpu_quota=unlimited mem=64261MiB (system-total) -> concurrency=2[explicit] ...
+  php execution configured mode="worker" concurrency=2 concurrency_source="explicit"
+    queue_depth=2 admission="fifo" overload="wait" shed_after_ms=0
+  concurrency from [php] concurrency concurrency=2 source="explicit"
+  worker pool started worker_count=2 max_requests=10000 backlog=2 admission="fifo"
+  ```
+
+  Anything other than `concurrency_source="explicit"` would have meant the pin
+  did not apply and the run was void. Captured twice, before and after the
+  measurement window, from the image the suite measured (`d6e9877204da` — the
+  suite's rebuild was a full cache hit, so the verified image and the measured
+  image are the same image).
+- **No load shedding.** `overload="wait"`, not `"shed"`. Under `Shed` ePHPm
+  answers a saturated queue with a cheap `503 + Retry-After`, which would inflate
+  its req/s by refusing work while every other arm queues. `Wait` is the default
+  and the configs do not set `[server] preview`; the startup line above is the
+  receipt rather than the assumption.
+- **Error accounting, not just timeouts.** **Zero `wrk` timeouts and zero non-2xx
+  or 3xx responses across all 60 measurements**, out of 2,976,714 requests. This
+  is stronger than the "zero timeouts" the earlier recordings reported: a runtime
+  can serve errors quickly and post a throughput number that is not comparable
+  with one that serves work, and nothing in `bench/summarize.sh` would show it.
+  `bench/percentiles.py` now carries a `non2xx` column so this is recorded per
+  measurement rather than asserted in prose. (The first three recordings'
+  committed CSVs predate the column and the raw `wrk` output is gitignored, so
+  they cannot be backfilled.)
+- **The profile guard ran.** All five arms reported
+  `session.driver=array cache.default=array db.default=sqlite` out of their
+  compiled config cache, read from inside each container before its
+  measurements; `bench/run.sh` aborts rather than measure a mismatch. Every
+  `app-config.txt` under `results/20260903T1645Z-worker-v090/` says the same.
+
+### Throughput, requests/sec
+
+Cells are `mean [min-max]` across the three rounds.
+
+| Runtime | health | static | cpu | db |
+| --- | ---: | ---: | ---: | ---: |
+| **ePHPm worker (Octane)** | **2,268** <sub>[2246-2295]</sub> | **2,214** <sub>[2169-2260]</sub> | **2,216** <sub>[2206-2234]</sub> | **1,521** <sub>[1513-1531]</sub> |
+| FrankenPHP (Octane) | 1,927 <sub>[1909-1946]</sub> | 1,888 <sub>[1851-1930]</sub> | 1,861 <sub>[1827-1899]</sub> | 1,309 <sub>[1284-1328]</sub> |
+| Swoole (Octane) | 1,789 <sub>[1773-1798]</sub> | 1,770 <sub>[1760-1788]</sub> | 1,740 <sub>[1727-1753]</sub> | 1,266 <sub>[1249-1290]</sub> |
+| OpenSwoole (Octane) | 1,786 <sub>[1770-1806]</sub> | 1,761 <sub>[1750-1774]</sub> | 1,729 <sub>[1726-1732]</sub> | 1,264 <sub>[1251-1285]</sub> |
+| RoadRunner (Octane) | 1,299 <sub>[1283-1323]</sub> | 1,244 <sub>[1234-1250]</sub> | 1,223 <sub>[1209-1235]</sub> | 966 <sub>[959-979]</sub> |
+
+### Ratio to control (FrankenPHP Octane = 1.00), throughput
+
+FrankenPHP under Octane is the control for this class: it is the only arm that
+appears in both classes, it was the strongest non-ePHPm worker runtime in every
+previous recording, and it is the most stable of the four non-ePHPm arms
+round to round.
+
+| Runtime | health | static | cpu | db |
+| --- | ---: | ---: | ---: | ---: |
+| **ePHPm worker** | **1.18** | **1.17** | **1.19** | **1.16** |
+| FrankenPHP | 1.00 | 1.00 | 1.00 | 1.00 |
+| Swoole | 0.93 | 0.94 | 0.93 | 0.97 |
+| OpenSwoole | 0.93 | 0.93 | 0.93 | 0.97 |
+| RoadRunner | 0.67 | 0.66 | 0.66 | 0.74 |
+
+Swoole and OpenSwoole land on top of each other to within 0.7% on every
+endpoint, which is what two builds of the same server should look like and is a
+useful internal consistency check on the recording. They did not do that in the
+second recording, where they differed by up to 8% and swung wildly round to
+round.
+
+### Latency, ms (lower is better)
+
+| Runtime | | health | static | cpu | db |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **ePHPm worker** | P50 | **43.4** <sub>[43.2-43.6]</sub> | **44.1** <sub>[43.6-44.4]</sub> | **44.5** <sub>[44.3-44.6]</sub> | **65.7** <sub>[65.2-66.0]</sub> |
+| | P90 | **44.5** <sub>[44.3-44.7]</sub> | **46.1** <sub>[44.6-48.2]</sub> | **45.7** <sub>[45.6-45.9]</sub> | **66.5** <sub>[66.0-66.8]</sub> |
+| | P99 | 57.5 <sub>[45.4-64.5]</sub> | 64.0 <sub>[61.4-65.8]</sub> | 58.2 <sub>[46.9-65.2]</sub> | **68.6** <sub>[68.2-68.9]</sub> |
+| FrankenPHP | P50 | 51.5 <sub>[50.9-52.0]</sub> | 52.6 <sub>[51.4-53.6]</sub> | 53.2 <sub>[52.2-54.2]</sub> | 75.9 <sub>[74.9-77.3]</sub> |
+| | P90 | 53.3 <sub>[52.8-53.9]</sub> | 54.6 <sub>[53.4-55.7]</sub> | 55.3 <sub>[54.2-56.3]</sub> | 78.2 <sub>[77.2-79.7]</sub> |
+| | P99 | **55.3** <sub>[54.6-55.6]</sub> | **57.4** <sub>[56.5-58.3]</sub> | **58.1** <sub>[55.8-60.0]</sub> | 80.3 <sub>[79.7-81.7]</sub> |
+| Swoole | P50 | 51.4 <sub>[49.3-55.4]</sub> | 51.2 <sub>[49.6-52.0]</sub> | 53.9 <sub>[51.7-57.2]</sub> | 78.2 <sub>[70.8-83.8]</sub> |
+| | P90 | 73.0 <sub>[70.7-77.4]</sub> | 72.3 <sub>[71.5-72.8]</sub> | 74.6 <sub>[72.2-77.7]</sub> | 85.1 <sub>[78.5-89.9]</sub> |
+| | P99 | 130.0 <sub>[127.0-135.2]</sub> | 130.1 <sub>[128.5-130.9]</sub> | 133.6 <sub>[131.9-136.1]</sub> | 165.3 <sub>[157.4-170.8]</sub> |
+| OpenSwoole | P50 | 54.2 <sub>[49.2-62.3]</sub> | 51.4 <sub>[50.1-52.1]</sub> | 55.9 <sub>[53.2-57.6]</sub> | 78.9 <sub>[70.9-89.3]</sub> |
+| | P90 | 75.7 <sub>[70.3-84.3]</sub> | 72.5 <sub>[71.7-73.0]</sub> | 76.2 <sub>[73.0-78.0]</sub> | 85.3 <sub>[78.6-95.6]</sub> |
+| | P99 | 133.0 <sub>[127.3-141.8]</sub> | 130.8 <sub>[130.2-131.1]</sub> | 135.7 <sub>[132.3-137.4]</sub> | 165.4 <sub>[157.3-176.4]</sub> |
+| RoadRunner | P50 | 57.1 <sub>[57.0-57.4]</sub> | 62.1 <sub>[60.1-65.3]</sub> | 64.4 <sub>[62.8-66.0]</sub> | 82.4 <sub>[81.0-83.5]</sub> |
+| | P90 | 143.5 <sub>[109.3-173.4]</sub> | 135.8 <sub>[119.7-168.0]</sub> | 120.9 <sub>[120.0-122.3]</sub> | 163.7 <sub>[159.4-167.5]</sub> |
+| | P99 | 260.1 <sub>[249.6-269.1]</sub> | 259.2 <sub>[244.3-274.2]</sub> | 182.9 <sub>[145.9-226.2]</sub> | 254.9 <sub>[166.8-310.9]</sub> |
+
+**ePHPm wins P50 and P90 on every endpoint and loses P99 on three of four.**
+FrankenPHP's P99 sits below ePHPm's by 2.2 ms on `health`, 6.6 ms on `static`
+and 0.1 ms on `cpu`; ePHPm's is 11.7 ms below FrankenPHP's on `db`.
+
+The reason is visible in the ranges rather than the means. FrankenPHP's P99 is
+extremely repeatable — the three rounds of `health` span 54.6 to 55.6 ms.
+ePHPm's is bimodal: `health` gives 45.4, 62.7 and 64.5 ms, and `cpu` gives 62.4,
+46.9 and 65.2 ms. So on those two endpoints ePHPm's *best* round beats
+FrankenPHP's *worst* by 10-13 ms, and its mean loses only because the other two
+rounds land 4-9 ms above FrankenPHP's mean. On `static` there is no such split
+(65.8 / 64.7 / 61.4) and ePHPm loses that one outright. **The honest summary is that ePHPm's P99 is level
+with FrankenPHP's and less repeatable, not that it is worse by a stable margin.**
+Three rounds is not enough to characterise a bimodal tail, and this recording
+does not attempt to.
+
+### Across recordings: second (`main` @ `6557152`) to fourth (published v0.9.0)
+
+**Read this as across-recording, not as a before/after.** The two are different
+ePHPm builds *and* different sessions on a shared developer workstation,
+separated by about a day, with a different rotation (five arms here, seven
+there, so a given arm's rounds are ~10 minutes apart instead of ~19). The
+harness's own before/after device — same host, same session, one binary swapped
+as the last image layer — was not used, and nothing here is controlled the way
+"Before and after: what PR #443 changed" is.
+
+Throughput, mean req/s:
+
+| Runtime | | health | static | cpu | db |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **ePHPm worker** | second | 2,220 | 2,147 | 2,149 | 1,485 |
+| | fourth | 2,268 | 2,214 | 2,216 | 1,521 |
+| | change | +2.2% | +3.1% | +3.1% | +2.4% |
+| FrankenPHP | second | 1,871 | 1,863 | 1,841 | 1,277 |
+| | fourth | 1,927 | 1,888 | 1,861 | 1,309 |
+| | change | +3.0% | +1.3% | +1.1% | +2.5% |
+| Swoole | second | 1,421 | 1,666 | 1,665 | 1,053 |
+| | fourth | 1,789 | 1,770 | 1,740 | 1,266 |
+| | change | +25.9% | +6.3% | +4.5% | +20.2% |
+| OpenSwoole | second | 1,522 | 1,540 | 1,550 | 1,134 |
+| | fourth | 1,786 | 1,761 | 1,729 | 1,264 |
+| | change | +17.4% | +14.4% | +11.5% | +11.4% |
+| RoadRunner | second | 1,234 | 1,177 | 1,120 | 899 |
+| | fourth | 1,299 | 1,244 | 1,223 | 966 |
+| | change | +5.3% | +5.6% | +9.1% | +7.5% |
+
+ePHPm worker latency, mean ms:
+
+| | | health | static | cpu | db |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **P50** | second | 44.6 | 45.5 | 45.8 | 67.0 |
+| | fourth | 43.4 | 44.1 | 44.5 | 65.7 |
+| | change | -2.6% | -3.1% | -2.8% | -1.9% |
+| **P90** | second | 46.4 | 49.3 | 48.6 | 69.2 |
+| | fourth | 44.5 | 46.1 | 45.7 | 66.5 |
+| | change | -4.1% | -6.6% | -6.0% | -3.9% |
+| **P99** | second | 59.5 | 66.0 | 61.3 | 74.1 |
+| | fourth | 57.5 | 64.0 | 58.2 | 68.6 |
+| | change | -3.3% | -3.2% | -5.0% | -7.5% |
+
+**Every arm improved, including the four that did not change at all.** Swoole
+and OpenSwoole are unchanged software and moved +26% and +17%; RoadRunner is
+unchanged software and moved +5-9%; FrankenPHP is unchanged software and moved
++1-3%. That is the size of the session-to-session term on this host, and it is
+larger than ePHPm's own +2-3%. **So the correct conclusion is that ePHPm worker
+mode did not measurably change between `main` @ `6557152` and released v0.9.0 —
+not that it got 2-3% faster.**
+
+The Swoole and OpenSwoole moves are mostly their own instability in the earlier
+session rather than anything about this one. Their second-recording rounds
+spanned 1,002-1,726 req/s (Swoole `health`) and 1,193-1,692 (OpenSwoole
+`health`); here they span 1,773-1,798 and 1,770-1,806. Their P99s halved for the
+same reason. Two of the five arms being that unstable in the second recording is
+itself a reason to prefer this recording's worker numbers.
+
+The tail comparison is the one that goes against ePHPm, and it is stated in the
+verdict above: ePHPm's P99 improved on all four endpoints (-3.2% to -7.5%) and
+FrankenPHP's improved more (-6.0% to -12.4%), so the *relative* tail position
+moved from ePHPm-ahead-on-three-of-four to FrankenPHP-ahead-on-three-of-four.
+Given that unchanged software moved by up to 26% on throughput and ~50% on P99
+in the same comparison, a few milliseconds of relative P99 movement is well
+inside what this pair of recordings can resolve. It is recorded because it is
+what was measured; it is **not** evidence that v0.9.0 cost ePHPm tail latency,
+and it should not be read that way in either direction.
+
+Ratio to the FrankenPHP control, which is the number that does survive the
+session change:
+
+| Runtime | | health | static | cpu | db |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **ePHPm worker** | second | 1.19 | 1.15 | 1.17 | 1.16 |
+| | fourth | **1.18** | **1.17** | **1.19** | **1.16** |
+| Swoole | second | 0.76 | 0.89 | 0.90 | 0.82 |
+| | fourth | 0.93 | 0.94 | 0.93 | 0.97 |
+| OpenSwoole | second | 0.81 | 0.83 | 0.84 | 0.89 |
+| | fourth | 0.93 | 0.93 | 0.93 | 0.97 |
+| RoadRunner | second | 0.66 | 0.63 | 0.61 | 0.70 |
+| | fourth | 0.67 | 0.66 | 0.66 | 0.74 |
+
+### The arms are not the same PHP
+
+As in the third recording, and for the same reason. Captured from each container
+during the run (`results/<run-id>/<runtime>/run-1/php-runtime.txt`):
+
+| Runtime | PHP |
+| --- | --- |
+| FrankenPHP, Swoole, OpenSwoole, RoadRunner | 8.4.24 |
+| ePHPm worker | 8.4.23 |
+
+ePHPm is one patch release behind because that is what the pinned `php-sdk`
+build for `ephpm/ephpm:v0.9.0-php8.4` ships. Nothing in the 8.4.23-to-8.4.24
+range is known to be performance-relevant, but it is a difference and it is not
+controlled.
+
+### Host discipline for this recording
+
+Reconstructed from the container engine's own event log across the whole
+16:42-17:30Z window, not from a snapshot:
+
+- Fifteen measurement windows, each ~125s, strictly serial. Every transition is
+  the same shape: container up, ~125s of warm-up and four 30s `wrk` runs,
+  container down, 60-61s cooldown, next container up. **No two runtimes were
+  ever up at once**, and the schedule matches `schedule.csv` exactly.
+- Thirteen of the fifteen windows have an explicit `died` event preceding the
+  next `start`. Two do not — FrankenPHP rounds 1 and 3 — and that is an event-log
+  gap rather than an overlap: the FrankenPHP image runs a healthcheck that emits
+  a `health_status` event every ~31s, and in both cases those events stop at
+  16:46:19Z and 17:26:41Z, which is ~125s after that container's `start` and
+  ~63s before the next container's `start`. The container was gone before the
+  next one came up; only the `died`/`cleanup`/`remove` triple failed to reach
+  the journal. FrankenPHP round 2 emitted all three normally.
+- Host load average was 0.43 immediately before the first measurement, with zero
+  running containers and no `wrk`, `k6`, `oha` or `bench` process on the host.
+- No unrelated container ran inside the window. The only non-measurement
+  container activity in this session was a pre-flight start of the ePHPm image
+  at 16:41:44Z, ~55 seconds *before* the run started, to capture the startup log
+  quoted above; it was torn down before `bench/run.sh` was launched.
+- Memory was not a factor: the WSL2 VM reports 62 GB available against ~1.6 GB
+  in use, and the whole class is five containers run one at a time with a 128M
+  PHP memory limit each. Nothing in the run shows memory pressure.
+- A note on the VM's declared size, because it is misleading in both directions:
+  `podman machine list` reports this machine as 16 CPUs / 2 GiB. Those figures do
+  not describe what the containers see. Inside the VM, `nproc` is 32 and `free -m`
+  is 64,261 MiB — it is a WSL2 machine and it sees the host. ePHPm's own autotune
+  line agrees (`mem=64261MiB (system-total)`), and this is exactly why the
+  `concurrency=2` pin matters: left to autotune, ePHPm would have taken 32.
+
+This matters because the failure it guards against is quiet: a competing
+100-connection `wrk` costs roughly 40% of throughput, and it shows up as one
+arm's rounds being low, which reads as a slow runtime rather than a busy host.
+
 ## Third recording — the per-request class, with FrankenPHP classic
 
 **What this recording is for.** FrankenPHP runs classic (non-worker) by default,
@@ -232,10 +532,13 @@ per-request` measures the class as a unit, rotating the three arms round to
 round exactly as `all` does.
 
 **The ePHPm binary here is the published `ephpm/ephpm:v0.9.0-php8.4`,
-unmodified**, not the `main` build the second recording used. The worker-class
-tables elsewhere in this document are from the second recording on
-`main` @ `6557152` and are unchanged. Do not read absolute numbers across the
-two recordings; read this one through its own control.
+unmodified**, not the `main` build the second recording used. Do not read
+absolute numbers across the two recordings; read this one through its own
+control. (When this recording was made, the worker-class tables were still from
+the second recording, on `main` @ `6557152`. The fourth recording, above, closed
+that gap — the worker class is now recorded on the same published v0.9.0 image.
+The two v0.9.0 recordings are separate sessions and are not cross-comparable
+with each other in absolute terms either.)
 
 ### Matching concurrency for FrankenPHP classic
 
@@ -426,7 +729,14 @@ validation, a CI change, and a docs change.
 Three rounds, 30s per endpoint, 10 threads, 100 connections, 100 warm-up
 requests, 60s cooldown between runtime sessions, harness runtime/endpoint
 rotation intact, `BENCH_PROFILE=runtime`. Cells are `mean [min-max]` across
-the three rounds. Zero `wrk` timeouts anywhere in this recording.
+the three rounds. Zero `wrk` timeouts anywhere in this recording. (Non-2xx
+responses were not counted in this recording; `bench/percentiles.py` gained the
+`non2xx` column at the fourth recording and this run's raw `wrk` output is gone.)
+
+**These worker-class tables are superseded** by "Fourth recording — the worker
+class, on ePHPm v0.9.0", which measures the same five arms on the published
+image instead of this unreleased commit. They are kept because the PR #443
+before/after below is measured against them.
 
 ### Worker class — throughput, requests/sec
 
@@ -899,7 +1209,7 @@ release CI.
 ### Deviations from the documented defaults
 
 - **Cooldown.** The runner defaults to `COOLDOWN=900`, which with seven runtimes
-  and three rounds is over five hours of waiting. Both recordings used
+  and three rounds is over five hours of waiting. All four recordings used
   `COOLDOWN=60`, uniform across all runtimes, with the harness's runtime-order
   and endpoint-order rotation intact.
 - **First recording, interrupted and resumed.** The primary run was interrupted
@@ -922,6 +1232,15 @@ release CI.
   the mode FrankenPHP defaults to — lives entirely inside the per-request class.
   Because the rotation is over three arms instead of seven, a given arm's rounds
   are ~10 minutes apart rather than ~19.
+- **Fourth recording, one class only.** Same deliberate narrowing, for the
+  worker class: five arms rotated among themselves, so a given arm's rounds are
+  ~15 minutes apart rather than ~19. It ran to completion with no interruption
+  and no re-measured cell.
+- **Fourth recording, a pre-flight container start.** The ePHPm image was started
+  once at 16:41:44Z, ~55 seconds before `bench/run.sh` was launched, to capture
+  and check its startup log, and was torn down before the run began. No
+  measurement was in flight. It is the only non-measurement container in the
+  window.
 - **Supplementary duration.** The first recording's supplementary run was one
   round of 20s; the second recording is three rounds of 30s. Absolute
   throughput is slightly lower at 30s across every runtime, so cross-recording
@@ -938,7 +1257,7 @@ release CI.
 
 ## Reproducing
 
-From a clean clone, with nothing edited. Both recordings are one environment
+From a clean clone, with nothing edited. The two profiles are one environment
 variable apart:
 
 ```bash
@@ -981,6 +1300,26 @@ RUN_ID=20260903T0650Z-perrequest-v090 \
 bash bench/run.sh per-request
 ```
 
+The fourth recording is the same command narrowed to the worker class, on the
+same published v0.9.0 binary:
+
+```bash
+bash bench/select-ephpm-binary.sh published            # v0.9.0, the base image's own
+
+BENCH_PROFILE=runtime \
+COMPOSE_CMD="podman compose" \
+ROUNDS=3 DURATION=30s COOLDOWN=60 ENDPOINT_COOLDOWN=0 INITIAL_COOLDOWN=60 \
+RUN_ID=20260903T1645Z-worker-v090 \
+bash bench/run.sh worker
+```
+
+Before trusting the ePHPm number from either, read the container's startup log
+and confirm it says `concurrency=2 concurrency_source="explicit"` and
+`overload="wait"`. `explicit` means the `ephpm.toml` pin applied; anything else
+means it did not, and ePHPm autotuned its concurrency from the CPU count while
+every other arm stayed at `--workers=2`. `overload="wait"` means a saturated
+queue waits rather than being answered with a cheap `503`.
+
 The first recording's `runtime` leg was one round of 20s
 (`ROUNDS=1 DURATION=20s`); everything else about it matches the second command.
 The second recording's v0.8.7 "before" leg is the same command restricted to
@@ -1007,7 +1346,11 @@ table are committed under `results/`; the raw `wrk` output stays gitignored as
 upstream intends. `summary.csv` is the harness's own output (average latency and
 P99 only); `percentiles.csv` is generated alongside it and carries P50/P75/P90/P99
 per runtime, endpoint and round, which is what the tail tables above are built
-from.
+from. From the fourth recording on it also carries `non2xx`, the count of
+non-2xx/3xx responses `wrk` saw — the counter that shows whether an arm's
+throughput was earned by serving requests or by refusing them. The first three
+recordings' CSVs predate the column and the raw `wrk` output they were parsed
+from is gitignored, so they cannot be backfilled.
 
 | Run ID | Profile | What |
 | --- | --- | --- |
@@ -1015,6 +1358,7 @@ from.
 | `20260902T050000Z-main6557152` | `runtime` | Second recording, all seven runtimes on `main` @ 6557152 |
 | `20260902T0700Z-v087before` | `runtime` | Second recording, the two ePHPm entries on published v0.8.7 |
 | `20260903T0650Z-perrequest-v090` | `runtime` | Third recording, the per-request class on published v0.9.0 |
+| `20260903T1645Z-worker-v090` | `runtime` | Fourth recording, the worker class on published v0.9.0 |
 
 The first three `settings.txt` files predate the `BENCH_PROFILE` knob and so do
 not carry a `bench_profile=` line; the profile for each is stated in the table

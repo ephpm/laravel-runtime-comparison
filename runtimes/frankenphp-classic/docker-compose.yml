@@ -1,0 +1,24 @@
+name: laravel-benchmark-frankenphp-classic
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: runtimes/frankenphp-classic/Dockerfile
+      args:
+        # Session/cache store baked into the image; see README.md, "Benchmark
+        # profiles". upstream (default) = database, which is what
+        # app/.env.example ships; runtime = array. Build time, not run time:
+        # `php artisan config:cache` bakes the drivers into the image.
+        BENCH_PROFILE: "${BENCH_PROFILE:-upstream}"
+    ports:
+      - "8088:8000"
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      LOG_CHANNEL: stderr
+      # FrankenPHP's shipped Caddyfile reads these; this arm replaces that file
+      # wholesale and hardcodes both, so they are set only to keep any inherited
+      # default from being ambiguous to a reader.
+      SERVER_NAME: ":8000"
+      SERVER_ROOT: /var/www/html/public

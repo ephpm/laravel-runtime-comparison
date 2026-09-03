@@ -20,7 +20,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="${ENGINE:-podman}"
-BASE_IMAGE="${BASE_IMAGE:-ephpm/ephpm:v0.8.7-php8.4}"
+BASE_IMAGE="${BASE_IMAGE:-ephpm/ephpm:v0.9.0-php8.4}"
 DEST="$ROOT_DIR/runtimes/ephpm-bin/ephpm"
 
 source="${1:?Usage: $0 published|/path/to/ephpm}"

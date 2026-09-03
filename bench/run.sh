@@ -14,7 +14,7 @@ INITIAL_COOLDOWN="${INITIAL_COOLDOWN:-$COOLDOWN}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 RESULT_ROOT="${RESULT_ROOT:-$ROOT_DIR/results}"
 RESULT_DIR="$RESULT_ROOT/$RUN_ID"
-RUNTIME_LIST=""
+RUNTIME_SET=()
 
 # Which session/cache store every image is built with. See README.md,
 # "Benchmark profiles". Exported because the Compose files read it as a build
@@ -39,6 +39,16 @@ esac
 # suite under a different engine, for example COMPOSE_CMD="podman compose".
 read -r -a COMPOSE <<< "${COMPOSE_CMD:-docker compose}"
 
+# Every runtime the suite knows about, and the two classes it splits into. A
+# class is a legitimate target ("bash bench/run.sh per-request") because the two
+# classes are not comparable to each other -- a worker runtime keeps the
+# framework resident and a per-request one does not -- so re-recording one class
+# on its own is a normal thing to want, and doing it through the runner keeps
+# the rotation, the cooldowns and the profile check that a hand-run loop loses.
+ALL_RUNTIMES=(frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker frankenphp-classic)
+PER_REQUEST_RUNTIMES=(nginx-fpm ephpm frankenphp-classic)
+WORKER_RUNTIMES=(frankenphp swoole openswoole roadrunner ephpm-worker)
+
 runtime_port() {
   case "$1" in
     frankenphp) printf '8081' ;;
@@ -48,6 +58,7 @@ runtime_port() {
     nginx-fpm) printf '8085' ;;
     ephpm) printf '8086' ;;
     ephpm-worker) printf '8087' ;;
+    frankenphp-classic) printf '8088' ;;
     *) return 1 ;;
   esac
 }
@@ -62,9 +73,13 @@ runtime_php_command() {
   esac
 }
 
+# Rotates the runtime order by one position per round, so no runtime always
+# measures first (warmest host) or last. `$@` is the set being measured, which
+# is the whole suite for "all" and one class for "per-request"/"worker".
 runtime_order_for_round() {
   local round="$1"
-  local runtimes=(frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker)
+  shift
+  local runtimes=("$@")
   local count="${#runtimes[@]}"
   local offset=$(( (round - 1) % count ))
   local index=0
@@ -89,8 +104,10 @@ endpoint_order_for_round() {
 }
 
 usage() {
-  printf 'Usage: %s [runtime|all]\n' "$0"
-  printf 'Runtime values: frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker\n'
+  printf 'Usage: %s [runtime|all|per-request|worker]\n' "$0"
+  printf 'Runtime values: %s\n' "${ALL_RUNTIMES[*]}"
+  printf 'Class values: per-request (%s), worker (%s)\n' \
+    "${PER_REQUEST_RUNTIMES[*]}" "${WORKER_RUNTIMES[*]}"
   printf 'Defaults: ROUNDS=3 DURATION=30s THREADS=10 CONNECTIONS=100 TIMEOUT=5s WARMUP_REQUESTS=100 COOLDOWN=900.\n'
   printf 'BENCH_PROFILE=upstream|runtime selects the session/cache store the images are built with\n'
   printf '(upstream=database, the harness default; runtime=array). Default: upstream.\n'
@@ -271,11 +288,7 @@ write_schedule() {
 
   printf 'sequence,round,runtime,endpoint_order\n' > "$RESULT_DIR/schedule.csv"
   for round in $(seq 1 "$ROUNDS"); do
-    if [[ "$RUNTIME_LIST" == "all" ]]; then
-      order="$(runtime_order_for_round "$round")"
-    else
-      order="$RUNTIME_LIST"
-    fi
+    order="$(runtime_order_for_round "$round" "${RUNTIME_SET[@]}")"
     endpoint_order="$(endpoint_order_for_round "$round")"
     endpoint_order_csv="${endpoint_order% }"
     endpoint_order_csv="${endpoint_order_csv// /|}"
@@ -307,28 +320,30 @@ command -v curl >/dev/null || { printf 'curl is required\n' >&2; exit 1; }
 command -v wrk >/dev/null || { printf 'wrk is required\n' >&2; exit 1; }
 
 target="${1:-}"
-if [[ "$target" == "all" ]]; then
-  RUNTIME_LIST="all"
-elif runtime_port "$target" >/dev/null; then
-  RUNTIME_LIST="$target"
-else
-  usage
-  exit 1
-fi
+case "$target" in
+  all) RUNTIME_SET=("${ALL_RUNTIMES[@]}") ;;
+  per-request) RUNTIME_SET=("${PER_REQUEST_RUNTIMES[@]}") ;;
+  worker) RUNTIME_SET=("${WORKER_RUNTIMES[@]}") ;;
+  *)
+    if runtime_port "$target" >/dev/null; then
+      RUNTIME_SET=("$target")
+    else
+      usage
+      exit 1
+    fi
+    ;;
+esac
 
 mkdir -p "$RESULT_DIR"
 write_settings
 write_schedule
 
 printf 'Benchmark profile: %s (session and cache store: %s)\n' "$BENCH_PROFILE" "$EXPECTED_STORE"
+printf 'Measuring: %s\n' "${RUNTIME_SET[*]}"
 printf 'Preparing runtime images before measurements...\n'
-if [[ "$RUNTIME_LIST" == "all" ]]; then
-  for runtime in frankenphp swoole openswoole roadrunner nginx-fpm ephpm ephpm-worker; do
-    prepare_runtime "$runtime"
-  done
-else
-  prepare_runtime "$RUNTIME_LIST"
-fi
+for runtime in "${RUNTIME_SET[@]}"; do
+  prepare_runtime "$runtime"
+done
 
 if has_incomplete_tests && [[ "$INITIAL_COOLDOWN" -gt 0 ]]; then
   printf 'Initial cooldown after image preparation: %s seconds\n' "$INITIAL_COOLDOWN"
@@ -336,11 +351,7 @@ if has_incomplete_tests && [[ "$INITIAL_COOLDOWN" -gt 0 ]]; then
 fi
 
 for round in $(seq 1 "$ROUNDS"); do
-  if [[ "$RUNTIME_LIST" == "all" ]]; then
-    order="$(runtime_order_for_round "$round")"
-  else
-    order="$RUNTIME_LIST"
-  fi
+  order="$(runtime_order_for_round "$round" "${RUNTIME_SET[@]}")"
 
   for runtime in $order; do
     status=0

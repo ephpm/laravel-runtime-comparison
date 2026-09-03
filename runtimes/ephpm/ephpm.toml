@@ -20,12 +20,17 @@ document_root = "/var/www/html/public"
 enabled = false
 
 [php]
-mode = "fpm"
+# v0.9.0 renamed this mode from "fpm" to "per_request". The old spelling is now
+# a startup error naming the key, not a silent fallback, so this file will not
+# boot on v0.9.0 with the old name and will not boot on <=v0.8.7 with the new
+# one. It is pinned to v0.9.0, which is what runtimes/ephpm/Dockerfile builds
+# FROM.
+mode = "per_request"
 
 # php-fpm's `pm.max_children = 2` equivalent: two concurrent PHP execution
-# slots, matching the two static FPM children and the Octane `--workers=2`
-# sizing every other runtime in this benchmark uses.
-workers = 2
+# slots, matching the two static FPM children, the Octane `--workers=2` sizing,
+# and FrankenPHP classic's `num_threads 2`. Named `workers` before v0.9.0.
+concurrency = 2
 
 # Pinned to PHP's stock 128M, which is what the other five images run with.
 # Left unset, ePHPm's serve-mode autotuner derives a much larger per-request

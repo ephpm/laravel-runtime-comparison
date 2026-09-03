@@ -1,0 +1,46 @@
+# FrankenPHP in classic (non-worker) mode.
+#
+# This is FrankenPHP's *default* mode and the one it runs when you install it
+# and point it at a Laravel public/ directory. `php_server` with no `worker`
+# sub-directive means every request goes through a full PHP request
+# startup/framework bootstrap/shutdown cycle, exactly like php-fpm -- which is
+# why this entry sits in the per-request class next to Nginx + PHP FPM and
+# ePHPm per-request, and not next to runtimes/frankenphp (which is Octane).
+#
+# Derived from the image's own /etc/frankenphp/Caddyfile, reduced to what this
+# benchmark needs: the commented-out Mercure/Vulcain blocks, the log filter,
+# and the Caddyfile.d import are dropped because none of them are configured
+# here, and `encode` is dropped because wrk sends no Accept-Encoding header, so
+# no other runtime in the suite compresses either.
+
+{
+	skip_install_trust
+	auto_https off
+	admin off
+
+	frankenphp {
+		# THE CONCURRENCY MATCH. In classic mode a FrankenPHP thread runs one
+		# PHP request at a time, so num_threads IS the count of PHP requests
+		# that can execute simultaneously -- the same quantity as php-fpm's
+		# `pm.max_children = 2` (runtimes/nginx-fpm/Dockerfile), Octane's
+		# `--workers=2`, and ePHPm's `[php] concurrency = 2`.
+		#
+		# Left unset it would be 2x the available CPUs, which on the recording
+		# host (16C/32T) is 64 -- a 32x concurrency advantage over every other
+		# arm. See RESULTS-EPHPM.md, "Matching concurrency for FrankenPHP
+		# classic", for why this knob and not another.
+		num_threads 2
+
+		# max_threads defaults to num_threads (no autoscaling), so this line
+		# changes nothing today. It is set anyway so that the cap is stated
+		# rather than inherited: if a future FrankenPHP flips the default to
+		# `auto`, an unpinned image would silently start scaling past 2 and the
+		# arm would stop being concurrency-matched without anything failing.
+		max_threads 2
+	}
+}
+
+:8000 {
+	root /var/www/html/public
+	php_server
+}

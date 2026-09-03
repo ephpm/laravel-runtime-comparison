@@ -2,9 +2,9 @@
 
 # Laravel Runtime Benchmark
 
-This repository provides a repeatable benchmark for one Laravel application running on seven PHP server setups:
+This repository provides a repeatable benchmark for one Laravel application running on eight PHP server setups:
 
-1. FrankenPHP
+1. FrankenPHP (Laravel Octane, worker mode)
 
 2. Swoole
 
@@ -18,9 +18,11 @@ This repository provides a repeatable benchmark for one Laravel application runn
 
 7. ePHPm in persistent worker mode
 
-The two ePHPm entries are additions in this fork. See `RESULTS-EPHPM.md` for
-how they are configured, what had to be relaxed to install the Octane driver,
-and two recorded runs of all seven setups.
+8. FrankenPHP in classic mode (its default, non-worker mode)
+
+The two ePHPm entries and `frankenphp-classic` are additions in this fork. See
+`RESULTS-EPHPM.md` for how they are configured, what had to be relaxed to
+install the Octane driver, and the recorded runs.
 
 Every setup uses the same Laravel source, Composer lock file, database schema, seed data, endpoints, worker count, and OPcache configuration. Docker base images are pinned with digest values so that a later build does not silently pull a different image.
 
@@ -78,6 +80,14 @@ The FrankenPHP, Swoole, OpenSwoole, and RoadRunner setups use Laravel Octane wit
 
 The Nginx setup uses Nginx in front of PHP FPM with two static PHP FPM children.
 
+The `frankenphp-classic` setup runs the **same** pinned FrankenPHP image in its
+default, non-worker mode: a Caddyfile with `php_server` and no worker script, so
+every request pays a full PHP request startup, Laravel bootstrap, and shutdown.
+It belongs in the same class as Nginx with PHP FPM, not next to `frankenphp`.
+Its two concurrent PHP executions come from `num_threads 2` — in classic mode a
+FrankenPHP thread runs one request at a time, so the thread count is the
+concurrency cap. See `runtimes/frankenphp-classic/Caddyfile`.
+
 The `ephpm` setup runs ePHPm in its per-request mode with two concurrent PHP
 execution slots, which is ePHPm's equivalent of `pm.max_children = 2`. It runs a
 full PHP request startup and shutdown per request, so it belongs in the same
@@ -88,11 +98,11 @@ driven by Laravel Octane through the `ephpm/octane-driver` package. It boots the
 framework once per worker, so it belongs in the same class as the four Octane
 setups.
 
-Both ePHPm setups build `FROM` the published `ephpm/ephpm:v0.8.7-php8.4` image,
+Both ePHPm setups build `FROM` the published `ephpm/ephpm:v0.9.0-php8.4` image,
 use stock `pdo_sqlite` against the same seeded database file as every other
 runtime, and pin the same OPcache directives as `runtimes/php.ini`. ePHPm's
 embedded Turso database engine is deliberately not used, so the storage path
-stays identical across all seven setups.
+stays identical across all eight setups.
 
 Which ePHPm binary those two images actually run is chosen by
 `bench/select-ephpm-binary.sh`, whose output both Dockerfiles copy over
@@ -213,7 +223,7 @@ Run all runtimes with the default settings, which is `BENCH_PROFILE=upstream`:
 make bench
 ```
 
-The runner accepts one runtime or `all`:
+The runner accepts one runtime, `all`, or a class name:
 
 ```bash
 bash bench/run.sh frankenphp
@@ -223,7 +233,19 @@ bash bench/run.sh roadrunner
 bash bench/run.sh nginx-fpm
 bash bench/run.sh ephpm
 bash bench/run.sh ephpm-worker
+bash bench/run.sh frankenphp-classic
 bash bench/run.sh all
+```
+
+The two class names measure one class, rotated and interleaved among its members
+exactly as `all` is. Worker and per-request results are not comparable to each
+other, so re-recording one class alone is a normal thing to want, and doing it
+through the runner keeps the rotation, the cooldowns, and the profile check that
+a hand-written loop loses:
+
+```bash
+bash bench/run.sh per-request   # nginx-fpm, ephpm, frankenphp-classic
+bash bench/run.sh worker        # frankenphp, swoole, openswoole, roadrunner, ephpm-worker
 ```
 
 The runner and the smoke check use Docker Compose v2 by default. To run the

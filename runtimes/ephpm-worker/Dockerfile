@@ -63,7 +63,7 @@ RUN php /tmp/merge-composer.php composer.json /tmp/composer-ephpm.json \
         --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-scripts \
     && cp vendor/ephpm/octane-driver/bin/ephpm-octane-worker public/ephpm-octane-worker.php
 
-FROM ephpm/ephpm:v0.8.7-php8.4
+FROM ephpm/ephpm:v0.9.0-php8.4
 
 WORKDIR /var/www/html
 

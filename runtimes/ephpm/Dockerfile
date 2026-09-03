@@ -50,7 +50,7 @@ RUN set -eu; \
     php artisan config:cache; \
     chmod -R ug+rwx storage bootstrap/cache
 
-FROM ephpm/ephpm:v0.8.7-php8.4
+FROM ephpm/ephpm:v0.9.0-php8.4
 
 WORKDIR /var/www/html
 

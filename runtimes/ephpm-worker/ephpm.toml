@@ -20,13 +20,13 @@ enabled = false
 [php]
 mode = "worker"
 
-# Resolved relative to document_root. ephpm/octane-driver ships this as a
-# console entrypoint; the Dockerfile copies it under public/ because ePHPm
-# requires the worker script to live inside the document root.
-worker_script = "ephpm-octane-worker.php"
-
 # Matches `octane:start --workers=2` on every other worker-class runtime.
-worker_count = 2
+#
+# v0.9.0 moved the worker pool size onto the shared `[php] concurrency` knob
+# (it was `worker_count`), because concurrency now bounds both execution modes.
+# The worker-only knobs moved into a `[php.worker]` subsection. Both old
+# spellings are startup errors on v0.9.0, not silent fallbacks.
+concurrency = 2
 
 # Pinned to PHP's stock 128M, which is what the other five images run with.
 php_memory_limit = "128M"
@@ -40,3 +40,10 @@ opcache_jit_buffer_size = 0
 
 realpath_cache_size = "4096K"
 realpath_cache_ttl = 600
+
+[php.worker]
+# Resolved relative to document_root. ephpm/octane-driver ships this as a
+# console entrypoint; the Dockerfile copies it under public/ because ePHPm
+# requires the worker script to live inside the document root. Was
+# `[php] worker_script` before v0.9.0.
+script = "ephpm-octane-worker.php"

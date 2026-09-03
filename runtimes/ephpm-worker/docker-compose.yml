@@ -19,9 +19,13 @@ services:
       LOG_CHANNEL: stderr
       EPHPM_APP_BASE: /var/www/html
       # Dispatch-queue depth sweep knob. Unset => "0", which is ephpm.toml's
-      # own default (0 => queue depth = worker_count). Overriding it through
+      # own default (0 => queue depth = concurrency). Overriding it through
       # the environment rather than the config file keeps the image byte
       # identical across every arm of the sweep, so queue depth is the only
       # variable. See RESULTS-EPHPM.md, "worker_backlog sweep".
-      EPHPM_PHP__WORKER_BACKLOG: "${WORKER_BACKLOG:-0}"
+      #
+      # v0.9.0 renamed the key from `worker_backlog` to `queue_depth` (it now
+      # bounds both execution modes). The compose variable keeps its old name so
+      # the sweep command line in RESULTS-EPHPM.md still reads the same.
+      EPHPM_PHP__QUEUE_DEPTH: "${WORKER_BACKLOG:-0}"
       EPHPM_SERVER__METRICS__ENABLED: "${EPHPM_METRICS:-false}"

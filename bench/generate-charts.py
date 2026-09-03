@@ -16,6 +16,7 @@ RUNTIME_NAMES = {
     "nginx-fpm": "Nginx with PHP FPM",
     "ephpm": "ePHPm (per-request)",
     "ephpm-worker": "ePHPm (worker)",
+    "frankenphp-classic": "FrankenPHP (classic)",
 }
 ENDPOINT_NAMES = {
     "db": "Database",

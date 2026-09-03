@@ -21,19 +21,37 @@ RUNTIME_SET=()
 # argument; the Dockerfiles map it onto SESSION_DRIVER and CACHE_STORE before
 # `php artisan config:cache` bakes them in.
 #
-#   upstream -- database, exactly what app/.env.example ships
-#   runtime  -- array
+#   upstream       -- database sessions, database cache; what app/.env.example ships
+#   runtime        -- array sessions, array cache
+#   file-sessions  -- file sessions, array cache
+#   redis-sessions -- redis sessions, array cache (needs the redis sidecar)
+#
+# The last two set session and cache independently, so the check below tracks
+# them as two values rather than one shared store.
 BENCH_PROFILE="${BENCH_PROFILE:-upstream}"
 export BENCH_PROFILE
 
 case "$BENCH_PROFILE" in
-  upstream) EXPECTED_STORE="database" ;;
-  runtime) EXPECTED_STORE="array" ;;
+  upstream) EXPECTED_SESSION="database"; EXPECTED_CACHE="database" ;;
+  runtime) EXPECTED_SESSION="array"; EXPECTED_CACHE="array" ;;
+  file-sessions) EXPECTED_SESSION="file"; EXPECTED_CACHE="array" ;;
+  # Diagnostic only; identical compiled drivers to file-sessions, so the check
+  # below cannot tell them apart. What differs is session.lottery, which the
+  # compiled config does not surface in this probe.
+  file-sessions-nogc) EXPECTED_SESSION="file"; EXPECTED_CACHE="array" ;;
+  redis-sessions) EXPECTED_SESSION="redis"; EXPECTED_CACHE="array" ;;
   *)
-    printf 'BENCH_PROFILE must be "upstream" or "runtime", got: %s\n' "$BENCH_PROFILE" >&2
+    printf 'BENCH_PROFILE must be "upstream", "runtime", "file-sessions", "file-sessions-nogc" or "redis-sessions", got: %s\n' "$BENCH_PROFILE" >&2
     exit 1
     ;;
 esac
+
+# The redis-sessions profile needs the sidecar, which the Compose files declare
+# behind a Compose profile so it does not start for the other three.
+if [[ "$BENCH_PROFILE" == "redis-sessions" ]]; then
+  COMPOSE_PROFILES="${COMPOSE_PROFILES:-redis}"
+  export COMPOSE_PROFILES
+fi
 
 # Container engine. Defaults to Docker Compose v2. Set COMPOSE_CMD to run the
 # suite under a different engine, for example COMPOSE_CMD="podman compose".
@@ -109,8 +127,9 @@ usage() {
   printf 'Class values: per-request (%s), worker (%s)\n' \
     "${PER_REQUEST_RUNTIMES[*]}" "${WORKER_RUNTIMES[*]}"
   printf 'Defaults: ROUNDS=3 DURATION=30s THREADS=10 CONNECTIONS=100 TIMEOUT=5s WARMUP_REQUESTS=100 COOLDOWN=900.\n'
-  printf 'BENCH_PROFILE=upstream|runtime selects the session/cache store the images are built with\n'
-  printf '(upstream=database, the harness default; runtime=array). Default: upstream.\n'
+  printf 'BENCH_PROFILE=upstream|runtime|file-sessions|redis-sessions selects the session/cache\n'
+  printf 'stores the images are built with: upstream=database/database (the harness default),\n'
+  printf 'runtime=array/array, file-sessions=file/array, redis-sessions=redis/array.\n'
 }
 
 is_complete() {
@@ -228,9 +247,9 @@ run_one() {
   fi
   printf '    app config: %s\n' "$(tr '\n' ' ' < "$run_dir/app-config.txt")"
 
-  if ! grep -q "session.driver=$EXPECTED_STORE cache.default=$EXPECTED_STORE" "$run_dir/app-config.txt"; then
+  if ! grep -q "session.driver=$EXPECTED_SESSION cache.default=$EXPECTED_CACHE" "$run_dir/app-config.txt"; then
     printf 'BENCH_PROFILE=%s expects session.driver=%s and cache.default=%s, but the %s image is running: %s\n' \
-      "$BENCH_PROFILE" "$EXPECTED_STORE" "$EXPECTED_STORE" "$runtime" \
+      "$BENCH_PROFILE" "$EXPECTED_SESSION" "$EXPECTED_CACHE" "$runtime" \
       "$(tr '\n' ' ' < "$run_dir/app-config.txt")" >&2
     printf 'That image was built with a different profile. Rebuild it (do not pass SKIP_BUILD=1) or set BENCH_PROFILE to match it.\n' >&2
     return 1
@@ -264,7 +283,8 @@ write_settings() {
   {
     printf 'run_id=%s\n' "$RUN_ID"
     printf 'bench_profile=%s\n' "$BENCH_PROFILE"
-    printf 'session_and_cache_store=%s\n' "$EXPECTED_STORE"
+    printf 'session_driver=%s\n' "$EXPECTED_SESSION"
+    printf 'cache_store=%s\n' "$EXPECTED_CACHE"
     printf 'rounds=%s\n' "$ROUNDS"
     printf 'duration=%s\n' "$DURATION"
     printf 'threads=%s\n' "$THREADS"
@@ -338,7 +358,8 @@ mkdir -p "$RESULT_DIR"
 write_settings
 write_schedule
 
-printf 'Benchmark profile: %s (session and cache store: %s)\n' "$BENCH_PROFILE" "$EXPECTED_STORE"
+printf 'Benchmark profile: %s (session driver: %s, cache store: %s)\n' \
+  "$BENCH_PROFILE" "$EXPECTED_SESSION" "$EXPECTED_CACHE"
 printf 'Measuring: %s\n' "${RUNTIME_SET[*]}"
 printf 'Preparing runtime images before measurements...\n'
 for runtime in "${RUNTIME_SET[@]}"; do

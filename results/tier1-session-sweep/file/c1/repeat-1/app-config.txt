@@ -1,0 +1,1 @@
+session.driver=file cache.default=array db.default=sqlite

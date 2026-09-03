@@ -18,3 +18,16 @@ services:
       APP_DEBUG: "false"
       LOG_CHANNEL: stderr
       OCTANE_SERVER: frankenphp
+
+  # Session store for BENCH_PROFILE=redis-sessions only, behind a Compose
+  # profile so `compose up` does not start it for the other three profiles.
+  # bench/run.sh sets COMPOSE_PROFILES=redis when that profile is selected.
+  # The service name is `redis` because REDIS_HOST is baked into the image at
+  # build time by `php artisan config:cache` and cannot be overridden at run
+  # time. Stock configuration, deliberately untuned; what it actually runs with
+  # is recorded in the run directory rather than asserted here.
+  redis:
+    image: redis:7-alpine@sha256:1db42ccef14898aa29bae778452d567534b59c107129cbc1163fb552de184d3c
+    profiles: ["redis"]
+    expose:
+      - "6379"

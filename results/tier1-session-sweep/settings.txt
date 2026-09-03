@@ -1,0 +1,14 @@
+run_id=tier1-session-sweep
+arm=ephpm-worker
+endpoint=/api/static
+drivers=array file database redis
+connection_ladder=1 2 4 8 16 32 64 100
+duration=25s
+timeout=5s
+warmup_requests=200
+repeats=3
+cell_cooldown_seconds=10
+driver_cooldown_seconds=30
+fresh_container_per_cell=yes
+started_at=2026-09-03T21:40:12Z
+finished_at=2026-09-03T21:53:03Z

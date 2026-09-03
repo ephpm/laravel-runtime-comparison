@@ -20,21 +20,55 @@ RUN composer install --no-dev --no-interaction --prefer-dist --optimize-autoload
 #     runtimes queue behind one lock. The suite then measures the lock.
 #   runtime -- array sessions and cache. Removes the shared lock so the suite
 #     measures the runtimes. /api/db still runs its four real SQLite queries.
+#   file-sessions -- file sessions, array cache. The control that separates
+#     "SQLite's global writer lock" from "persisting a session costs
+#     something at all": the session is still written to disk on every
+#     request, but the file driver locks per session id, so there is no one
+#     lock every request has to queue behind.
+#   file-sessions-nogc -- file sessions with Laravel's session GC lottery
+#     turned off (`session.lottery` [2,100] -> [0,100]). A DIAGNOSTIC, not a
+#     configuration anyone should run: it exists only to attribute the file
+#     driver's cost. Laravel's file GC scans the whole session directory, and
+#     because `wrk` sends no cookie every request creates a new session file,
+#     so that directory grows by tens of thousands of files inside a single
+#     measurement window and the scan gets steadily more expensive. Without
+#     this leg there is no way to tell that cost apart from the per-request
+#     write, and `file` is the control the whole lock argument leans on.
+#   redis-sessions -- redis sessions, array cache. What production Laravel
+#     actually runs. Deliberately NOT a clean isolation of the lock: it adds a
+#     network round trip per request and a second container competing for the
+#     same cores, so it answers "what should this app use" rather than "what
+#     is the lock costing". Uses predis (pure PHP) rather than the phpredis
+#     extension, because ePHPm links its own ZTS PHP and cannot load an
+#     extension built against another PHP; one client on every arm keeps the
+#     arms comparable, at the cost of some absolute Redis throughput.
 #
-# Nothing else differs between the two. See README.md, "Benchmark profiles".
+# Cache is array in both new profiles, so the session driver is the only thing
+# that differs between them and `runtime`. See README.md, "Benchmark profiles".
 ARG BENCH_PROFILE=upstream
 
 COPY app/ ./
 RUN set -eu; \
     case "$BENCH_PROFILE" in \
-      upstream) bench_store=database ;; \
-      runtime) bench_store=array ;; \
-      *) echo "BENCH_PROFILE must be upstream or runtime, got: $BENCH_PROFILE" >&2; exit 1 ;; \
+      upstream) bench_session=database; bench_cache=database ;; \
+      runtime) bench_session=array; bench_cache=array ;; \
+      file-sessions) bench_session=file; bench_cache=array ;; \
+      file-sessions-nogc) bench_session=file; bench_cache=array; disable_gc=1 ;; \
+      redis-sessions) bench_session=redis; bench_cache=array ;; \
+      *) echo "BENCH_PROFILE must be upstream, runtime, file-sessions, file-sessions-nogc or redis-sessions, got: $BENCH_PROFILE" >&2; exit 1 ;; \
     esac; \
+    if [ "${disable_gc:-0}" = 1 ]; then \
+      sed -i "s/'lottery' => \[2, 100\]/'lottery' => [0, 100]/" config/session.php; \
+      grep -q "'lottery' => \[0, 100\]" config/session.php; \
+    fi; \
+    if [ "$bench_session" = redis ]; then \
+      composer require predis/predis --no-interaction --no-scripts --update-no-dev --optimize-autoloader; \
+    fi; \
     rm -f bootstrap/cache/*.php; \
     cp .env.example .env; \
-    sed -i -e "s/^SESSION_DRIVER=.*/SESSION_DRIVER=$bench_store/" \
-           -e "s/^CACHE_STORE=.*/CACHE_STORE=$bench_store/" .env; \
+    sed -i -e "s/^SESSION_DRIVER=.*/SESSION_DRIVER=$bench_session/" \
+           -e "s/^CACHE_STORE=.*/CACHE_STORE=$bench_cache/" .env; \
+    printf 'REDIS_CLIENT=predis\nREDIS_HOST=redis\nREDIS_PORT=6379\n' >> .env; \
     php artisan key:generate --force; \
     touch database/database.sqlite; \
     php artisan migrate --force --seed; \

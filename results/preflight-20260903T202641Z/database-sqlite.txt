@@ -1,0 +1,4 @@
+journal_mode=delete
+busy_timeout=60000
+synchronous=2
+tables=migrations,sqlite_sequence,users,password_reset_tokens,sessions,cache,cache_locks,jobs,job_batches,failed_jobs,products

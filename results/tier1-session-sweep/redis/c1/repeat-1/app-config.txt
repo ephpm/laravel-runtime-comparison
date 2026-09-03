@@ -1,0 +1,1 @@
+session.driver=redis cache.default=array db.default=sqlite

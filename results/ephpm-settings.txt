@@ -1,0 +1,25 @@
+# image: bench-ephpm-worker:upstream
+# captured: 2026-09-03T20:29:42Z
+
+2026-09-03T20:29:43.306149Z  INFO ephpm: starting ePHPm listen=0.0.0.0:8000 document_root=/var/www/html/public
+2026-09-03T20:29:43.320433Z  INFO ephpm: autotune (serve): cpu_quota=unlimited mem=64261MiB (system-total) -> concurrency=2[explicit] opcache.memory_consumption=128MB* memory_limit=128M* interned=16MB* jit_buffer=0MB* (jit=disable*) max_files=20000* realpath=4096K*/ttl=600* validate_timestamps=0* assertions=-1
+2026-09-03T20:29:43.320461Z  INFO ephpm: opcache JIT OFF ([php] opcache_jit set explicitly)
+2026-09-03T20:29:43.320465Z  INFO ephpm: opcache timestamp validation OFF (serve mode); code changes require `ephpm deploy` or `ephpm cache reset`
+2026-09-03T20:29:43.320468Z  WARN ephpm: opcache timestamp validation is OFF but the RESP listener is disabled ([kv.redis_compat] enabled = false) — `ephpm deploy` / `ephpm cache reset` cannot reach this server, so cached code can only be refreshed by restarting. Enable the RESP listener, or set [php] opcache_validate_timestamps = true.
+2026-09-03T20:29:43.330862Z  INFO ephpm_php: PHP runtime initialized (libphp linked)
+2026-09-03T20:29:43.335542Z  INFO ephpm_php: KV store wired to PHP native functions
+2026-09-03T20:29:43.335650Z  INFO ephpm_server: php execution configured mode="worker" concurrency=2 concurrency_source="explicit" queue_depth=2 admission="fifo" overload="wait" shed_after_ms=0
+2026-09-03T20:29:43.335747Z  INFO ephpm_server: concurrency from [php] concurrency concurrency=2 source="explicit"
+2026-09-03T20:29:43.335804Z  INFO ephpm_php: worker ops wired to PHP native functions populate_superglobals=false
+2026-09-03T20:29:43.335814Z  INFO ephpm_server: worker mode: request bodies at/above [php.worker] stream_threshold stream into the worker (flat memory); smaller bodies buffer stream_threshold=1048576
+2026-09-03T20:29:43.335968Z  INFO ephpm_server::worker_pool: worker pool started worker_count=2 max_requests=10000 recycle_policy=recycle after 10000 requests per worker backlog=2 admission="fifo" script=/var/www/html/public/ephpm-octane-worker.php
+2026-09-03T20:29:43.336059Z  INFO ephpm_server: HTTP listening addr=0.0.0.0:8000
+2026-09-03T20:29:43.336546Z  INFO ephpm_server::worker_pool: worker booting framework worker_id=0
+2026-09-03T20:29:43.336965Z  INFO ephpm_server::worker_pool: worker booting framework worker_id=1
+2026-09-03T20:29:43.493299Z  INFO ephpm_server::worker_pool: worker booted worker_id=1 boot_elapsed=0.156393903
+2026-09-03T20:29:43.493294Z  INFO ephpm_server::worker_pool: worker booted worker_id=0 boot_elapsed=0.156807729
+2026-09-03T20:29:54.818120Z  INFO ephpm_server: received SIGTERM, shutting down
+2026-09-03T20:29:54.818176Z  INFO ephpm_server: shutdown signal received, stopping server
+2026-09-03T20:29:54.818257Z  INFO ephpm_server::worker_pool: worker pool draining — dispatch closed
+2026-09-03T20:29:54.844479Z  INFO ephpm_server: all worker threads retired
+2026-09-03T20:29:54.851286Z  INFO ephpm_php: PHP runtime shut down

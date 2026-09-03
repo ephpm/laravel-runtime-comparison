@@ -1,0 +1,7 @@
+Redis server v=7.4.11 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=fbf7a7d03c2e9219
+save
+3600 1 300 100 60 10000
+appendonly
+no
+maxmemory-policy
+noeviction

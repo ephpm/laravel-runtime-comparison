@@ -137,15 +137,49 @@ a SQLite write. SQLite serializes writers behind one global write lock, so all
 seven runtimes queue behind the same lock and the suite mostly measures that
 lock rather than the runtimes.
 
-`BENCH_PROFILE` selects which of the two configurations the images are built
-with. Both are committed; neither requires editing a file.
+`BENCH_PROFILE` selects which configuration the images are built with. All four
+are committed; none requires editing a file.
 
-| `BENCH_PROFILE` | Session and cache store | What the suite then measures |
-| --- | --- | --- |
-| `upstream` (default) | `database` | The SQLite session-write lock, shared by all seven runtimes |
-| `runtime` | `array` | The runtimes. `/api/db` still runs its four real SQLite queries |
+| `BENCH_PROFILE` | Session driver | Cache store | What the suite then measures |
+| --- | --- | --- | --- |
+| `upstream` (default) | `database` | `database` | The SQLite session-write lock, shared by every runtime |
+| `runtime` | `array` | `array` | The runtimes. `/api/db` still runs its four real SQLite queries |
+| `file-sessions` | `file` | `array` | Session persistence *without* a global lock |
+| `redis-sessions` | `redis` | `array` | What production Laravel actually runs |
 
-Nothing else differs between the two. `DB_CONNECTION` stays `sqlite` in both.
+`DB_CONNECTION` stays `sqlite` in all four.
+
+`array` alone cannot tell "SQLite serializes every writer" apart from "persisting
+a session costs something", because `array` persists nothing at all. That is what
+`file-sessions` is for: the session is still written to disk on every request,
+but the file driver locks per session id, so there is no single lock every
+request queues behind. It is the control that makes the lock claim falsifiable —
+if `file` were as slow as `database`, the cost would be persistence rather than
+locking.
+
+`redis-sessions` answers a different question and is **not** a clean isolation of
+the lock: it adds a network round trip per request and a second container
+competing for the same cores. It is here because it is the realistic production
+choice, not because it is the controlled one. Cache is `array` in both new
+profiles so the session driver is the only thing that varies between them and
+`runtime`.
+
+Two things about `redis-sessions` are deliberate and worth knowing before
+comparing its numbers to anything:
+
+- It uses **predis** (a pure-PHP client) rather than the `phpredis` extension.
+  ePHPm links its own ZTS PHP and cannot load an extension built against another
+  PHP build, so `phpredis` cannot be installed on every arm. One client on every
+  arm keeps the arms comparable; the cost is that these are a lower bound on what
+  Redis sessions can do, since `phpredis` is faster than `predis`.
+- The vendor tree for this profile therefore contains one package the other three
+  do not. No other profile's image changes.
+
+Laravel's `redis` session driver routes through the Redis **cache** store, so its
+keys carry the cache prefix (`laravel-database-laravel-cache-…`) and land in the
+default connection's database, not `REDIS_CACHE_DB`. That is Laravel's behaviour,
+not a misconfiguration, and it is why the sidecar's `DBSIZE` is a valid count of
+sessions written.
 
 The measured difference is large. On the host described in `RESULTS-EPHPM.md`,
 moving from `runtime` to `upstream` took FrankenPHP from 1,863 to 116 req/s and
@@ -158,9 +192,32 @@ because the bottleneck is identical for every runtime; it is just a measurement
 of the session store.
 
 ```bash
-BENCH_PROFILE=upstream bash bench/run.sh all   # the harness as it ships
-BENCH_PROFILE=runtime  bash bench/run.sh all   # the runtimes
+BENCH_PROFILE=upstream       bash bench/run.sh all   # the harness as it ships
+BENCH_PROFILE=runtime        bash bench/run.sh all   # the runtimes
+BENCH_PROFILE=file-sessions  bash bench/run.sh all   # persistence, no global lock
+BENCH_PROFILE=redis-sessions bash bench/run.sh all   # the production choice
 ```
+
+`redis-sessions` needs the Redis sidecar, which the Compose files declare behind
+a Compose profile so it never starts for the other three. `bench/run.sh` enables
+it automatically by setting `COMPOSE_PROFILES=redis` when that profile is
+selected. The sidecar is pinned by digest like every other image in the suite and
+runs stock — no tuning, and no persistence changes in either direction.
+
+To measure the *shape* of throughput against concurrency rather than a single
+100-connection point, use `bench/session-sweep.sh`, which walks a connection
+ladder across session drivers on one arm and one endpoint:
+
+```bash
+RUN_ID=tier1 DURATION=25s REPEATS=3 bash bench/session-sweep.sh array file database redis
+python3 bench/sweep-table.py results/tier1
+```
+
+That script gives every cell a **fresh container** on purpose. `wrk` never sends
+a cookie back, so every request mints a new session id and the store grows by one
+entry per request; reusing a container would start the 100-connection cell
+against a store holding a million rows the 1-connection cell never saw, and any
+flattening could then be blamed on store growth rather than on locking.
 
 `BENCH_PROFILE` is a **build-time** selection, not a run-time one. Laravel bakes
 `session.driver` and `cache.default` into `bootstrap/cache/config.php` when
@@ -269,7 +326,7 @@ The runner supports these environment variables:
 | `COOLDOWN` | `900` | Seconds between runtime sessions |
 | `INITIAL_COOLDOWN` | Value of `COOLDOWN` | Seconds to wait after image preparation |
 | `RUN_ID` | Current UTC timestamp | Directory name under `results/` |
-| `BENCH_PROFILE` | `upstream` | Session and cache store the images are built with: `upstream` (`database`) or `runtime` (`array`). See "Benchmark profiles" |
+| `BENCH_PROFILE` | `upstream` | Session/cache stores the images are built with: `upstream` (`database`/`database`), `runtime` (`array`/`array`), `file-sessions` (`file`/`array`) or `redis-sessions` (`redis`/`array`). See "Benchmark profiles" |
 | `SKIP_BUILD` | `0` | `1` measures whatever image is already tagged instead of rebuilding. The `BENCH_PROFILE` check still runs |
 
 For a schedule with a 10 minute initial wait, 4 minute endpoint breaks, and 5 minute runtime breaks:

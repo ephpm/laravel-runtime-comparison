@@ -1,0 +1,1 @@
+session store: before=1 after=101 delta=100 over 100 requests

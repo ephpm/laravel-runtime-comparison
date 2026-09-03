@@ -1,0 +1,14 @@
+run_id=tier1-file-gc-diagnostic
+arm=ephpm-worker
+endpoint=/api/static
+drivers=file-nogc
+connection_ladder=1 2 4 8 16 32 64 100
+duration=25s
+timeout=5s
+warmup_requests=200
+repeats=1
+cell_cooldown_seconds=10
+driver_cooldown_seconds=10
+fresh_container_per_cell=yes
+started_at=2026-09-03T21:59:33Z
+finished_at=2026-09-03T22:05:20Z

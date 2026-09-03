@@ -9,7 +9,7 @@ the additions are `runtimes/ephpm/`, `runtimes/ephpm-worker/`,
 a class rather than a single runtime, and to run the suite under a non-Docker
 engine.
 
-There are **four recordings**. All are kept, because they measure different
+There are **five recordings**. All are kept, because they measure different
 things and the differences between them are the point:
 
 | Recording | Date | ePHPm build | Shape | Profile |
@@ -18,6 +18,13 @@ things and the differences between them are the point:
 | **Second** | 2026-09-02 (UTC), later | ePHPm `main` @ `6557152` | all 7 runtimes, 3 x 30s, plus a v0.8.7 "before" leg | `runtime` |
 | **Third** | 2026-09-03 (UTC) | `ephpm/ephpm:v0.9.0-php8.4`, unmodified | **per-request class only** (3 runtimes incl. the new FrankenPHP classic), 3 x 30s | `runtime` |
 | **Fourth** | 2026-09-03 (UTC), later | `ephpm/ephpm:v0.9.0-php8.4`, unmodified | **worker class only** (all 5 runtimes), 3 x 30s | `runtime` |
+| **Fifth** | 2026-09-03 (UTC), later | `ephpm/ephpm:v0.9.0-php8.4`, unmodified | **one arm, one endpoint**, concurrency sweep 1->100 across four session drivers, 3 x 25s | all four |
+
+The fifth is not a runtime comparison at all — it is a measurement of the
+**harness**, testing whether `BENCH_PROFILE=upstream` really is a global SQLite
+writer lock rather than merely a slower session store. It is the first section
+below because it changes how every `upstream` number in this document should be
+read.
 
 Everything not ePHPm is identical between the first two. The third and fourth
 each measure one class on the published v0.9.0 image, so **neither is
@@ -34,13 +41,19 @@ longer where the verdict comes from.
 ## Which profile every number below came from
 
 `BENCH_PROFILE` (README.md, "Benchmark profiles") selects the session and cache
-store every image is built with. Both values are committed and either is one
-environment variable away — nothing has to be edited to reproduce either one:
+store every image is built with. Every value is committed and each is one
+environment variable away — nothing has to be edited to reproduce any of them:
 
-| `BENCH_PROFILE` | Session and cache store | What it measures |
-| --- | --- | --- |
-| `upstream` (default) | `database` | The shared SQLite session-write lock |
-| `runtime` | `array` | The runtimes |
+| `BENCH_PROFILE` | Session driver | Cache store | What it measures |
+| --- | --- | --- | --- |
+| `upstream` (default) | `database` | `database` | The shared SQLite session-write lock |
+| `runtime` | `array` | `array` | The runtimes |
+| `file-sessions` | `file` | `array` | Session persistence without a global lock |
+| `redis-sessions` | `redis` | `array` | The production session store |
+| `file-sessions-nogc` | `file` | `array` | Diagnostic only — `file` with Laravel's session GC lottery off |
+
+The last three were added for the fifth recording below. `file-sessions-nogc` is
+a diagnostic and is not a configuration anyone should run.
 
 **Every differentiating number in this document was recorded with
 `BENCH_PROFILE=runtime`.** The `upstream` numbers are kept, and labelled, in
@@ -48,6 +61,313 @@ environment variable away — nothing has to be edited to reproduce either one:
 not separate the runtimes. Each run directory carries an `app-config.txt` naming
 the drivers its containers actually ran, and `bench/run.sh` aborts rather than
 record a run whose containers disagree with the requested profile.
+
+## Fifth recording — is the session store a *global lock*, or just slow?
+
+Everything above takes it on faith that `BENCH_PROFILE=upstream` measures "the
+SQLite session-write lock". That claim was never actually tested. It rested on
+two circumstantial observations: an informal sweep that saw ~130 req/s at one
+connection rising only to ~197 at a hundred, and the article author's published
+numbers, where one runtime's health, static and cpu endpoints land within 2% of
+each other despite doing very different amounts of work.
+
+This recording tests it. The result is that the claim is **correct**, and the
+effect is larger and cleaner than the earlier hand-waving suggested.
+
+### Why `array` alone could never have settled it
+
+`runtime` (array) versus `upstream` (database) cannot distinguish "SQLite
+serialises every writer" from "persisting a session costs something", because
+`array` persists nothing at all. Any gap between them is consistent with both
+stories. So this recording adds session drivers that *do* persist but do not
+share one lock:
+
+| Driver | Persists? | Contention shape |
+| --- | --- | --- |
+| `array` | no | none — the floor for "what does the runtime do with no session store" |
+| `file` | yes, to disk | per session id, so no single lock |
+| `redis` | yes, over a network | per key, in a separate process |
+| `database` | yes, to SQLite | one process-wide writer lock |
+
+The two signatures being told apart are:
+
+- **A global writer lock** → throughput is **flat** as connections rise. Every
+  request serialises behind the same resource, so offering more load adds
+  queueing and nothing else.
+- **A worker-count limit** → throughput **scales, then plateaus** at the worker
+  count. Every arm here runs `concurrency = 2`, so that plateau is at roughly
+  twice the single-connection number.
+
+### Shape: throughput against concurrency
+
+ePHPm worker mode, `/api/static`, 25s windows, 3 repeats, fresh container per
+cell, `concurrency = 2`. Mean [min-max] across the three repeats.
+
+| conns | `array` | `file` | `redis` | `database` |
+| --- | --- | --- | --- | --- |
+| 1 | 1,007 [991-1,017] | 469 [456-476] | 807 [799-815] | 172 [144-190] |
+| 2 | 2,021 [1,978-2,046] | 704 [685-726] | 1,585 [1,543-1,608] | 190 [177-204] |
+| 4 | 2,345 [2,330-2,360] | 741 [726-750] | 1,813 [1,784-1,834] | 176 [116-208] |
+| 8 | 2,306 [2,294-2,315] | 717 [711-721] | 1,763 [1,746-1,774] | 203 [193-210] |
+| 16 | 2,304 [2,291-2,318] | 721 [718-726] | 1,766 [1,741-1,781] | 187 [169-199] |
+| 32 | 2,284 [2,246-2,308] | 723 [712-732] | 1,768 [1,751-1,784] | 186 [176-204] |
+| 64 | 2,297 [2,277-2,310] | 720 [711-733] | 1,751 [1,730-1,766] | 195 [180-218] |
+| 100 | 2,315 [2,274-2,353] | 720 [706-735] | 1,759 [1,750-1,768] | 177 [145-199] |
+
+Scaling factor against the same driver at one connection — this is the whole
+experiment in one table:
+
+| conns | `array` | `file` | `redis` | `database` |
+| --- | --- | --- | --- | --- |
+| 2 | 2.01x | 1.50x | 1.97x | **1.10x** |
+| 4 | 2.33x | 1.58x | 2.25x | **1.02x** |
+| 8 | 2.29x | 1.53x | 2.18x | **1.18x** |
+| 16 | 2.29x | 1.54x | 2.19x | **1.08x** |
+| 32 | 2.27x | 1.54x | 2.19x | **1.08x** |
+| 64 | 2.28x | 1.54x | 2.17x | **1.13x** |
+| 100 | 2.30x | 1.54x | 2.18x | **1.03x** |
+
+`array` and `redis` scale to ~2.2-2.3x and stop, which is exactly the two-worker
+plateau. `database` does not scale **at all**: a hundred connections produce the
+same throughput as one. That is the global-lock signature, and it is not
+marginal — it is the difference between 2.30x and 1.03x.
+
+### P99 latency, ms
+
+| conns | `array` | `file` | `redis` | `database` |
+| --- | --- | --- | --- | --- |
+| 1 | 1.4 [1.4-1.4] | 86.5 [84.6-87.7] | 1.6 [1.6-1.6] | 23.1 [15.8-37.2] |
+| 2 | 1.3 [1.3-1.4] | 141.2 [138.3-145.1] | 1.7 [1.6-1.8] | **2,316.7 [1,990-2,670]** |
+| 4 | 2.3 [2.0-2.5] | 147.0 [144.5-148.6] | 2.7 [2.6-2.9] | 2,083.3 [1,640-2,640] |
+| 8 | 4.7 [4.3-4.9] | 148.4 [143.0-152.6] | 5.4 [5.3-5.4] | 1,763.3 [1,640-1,950] |
+| 16 | 5.6 [4.8-6.0] | 146.5 [139.8-153.6] | 6.4 [6.3-6.6] | 1,436.7 [1,160-1,750] |
+| 32 | 17.8 [15.6-19.3] | 192.9 [180.8-206.7] | 18.8 [18.3-19.7] | 955.6 [676.8-1,110] |
+| 64 | 34.2 [29.1-37.7] | 308.6 [281.3-324.8] | 37.9 [36.1-39.4] | 1,233.8 [691.5-1,740] |
+| 100 | 47.1 [45.0-50.7] | 413.6 [406.4-425.2] | 62.2 [60.5-63.1] | 1,118.7 [956.1-1,230] |
+
+The single most telling number in this recording is `database` going from 23ms
+at one connection to **2,317ms at two**. Adding one concurrent request multiplies
+tail latency by a hundred while throughput does not improve. Nothing but
+serialisation does that.
+
+### The `file` control, and the confound that nearly ruined it
+
+At first pass `file` looked like a partial refutation: it recovered a lot of
+ground on `database` but sat well below `array`, and it scaled only 1.54x. Taken
+at face value that would have meant "persistence itself limits scaling", which
+weakens the lock story.
+
+It was an artefact. Laravel's `session.lottery` defaults to `[2, 100]`, so 2% of
+requests run session GC, and the **file** driver's GC scans the entire session
+directory. Because `wrk` never sends a cookie back, every request creates a new
+session file, so that directory grows by tens of thousands of files *inside a
+single 25s window* and each scan gets progressively more expensive. That cost
+has nothing to do with locking.
+
+Re-running the same ladder against `file-sessions-nogc` (identical image, only
+`session.lottery` set to `[0, 100]`, verified per cell from the compiled config):
+
+| conns | `file` (stock GC) | `file-nogc` | `array` |
+| --- | --- | --- | --- |
+| 1 | 469 | 874 | 1,007 |
+| 2 | 704 | 1,793 | 2,021 |
+| 4 | 741 | 2,039 | 2,345 |
+| 8 | 717 | 1,962 | 2,306 |
+| 16 | 721 | 1,971 | 2,304 |
+| 32 | 723 | 1,961 | 2,284 |
+| 64 | 720 | 1,944 | 2,297 |
+| 100 | 720 | 1,975 | 2,315 |
+| **scaling 1→100** | **1.54x** | **2.26x** | **2.30x** |
+
+Latency says the same thing even more bluntly. Stock `file` has an 86.5ms P99 at
+**one** connection, which is absurd for a request that writes one small file and
+is the GC scan showing up directly. `file-nogc` has a 1.6ms P99 at one connection
+and 54.2ms at a hundred — the same curve as `array` (1.4ms → 47.1ms), and nothing
+like `database` (23ms → 1,119ms, via 2,317ms at two connections).
+
+With the GC scan removed, `file` scales 2.26x — indistinguishable from `array`'s
+2.30x — and lands at 85% of `array`'s absolute throughput. So a session that is
+genuinely persisted to disk on every request costs about 15% and **does not stop
+the runtime scaling**. `file-nogc` is one repeat, not three, so it carries no
+run-to-run spread; it is a diagnostic, and the 2.26x should be read as solid on
+shape and approximate on level.
+
+### Verdict: it is a global lock, and it costs 11-13x
+
+Three different persistent session stores — disk, network, and SQLite — were
+measured on the same arm, the same endpoint, and the same host. Two of the three
+scale to the runtime's worker limit. Only SQLite does not scale at all.
+Persistence is not what flattens the benchmark; **SQLite's process-wide writer
+lock is.**
+
+| Comparison at 100 connections | req/s | vs `database` |
+| --- | --- | --- |
+| `array` (no sessions) | 2,315 | **13.1x** |
+| `file-nogc` (disk, no GC) | 1,975 | 11.2x |
+| `redis` (network) | 1,759 | **10.0x** |
+| `file` (disk, stock GC) | 720 | 4.1x |
+| `database` (SQLite) | 177 | 1.0x |
+
+In absolute terms the lock holds the whole application to **~180 req/s**, against
+~2,000-2,300 req/s for the same code with a session store that is not serialised.
+At one connection the penalty is only 5.9x, because at one connection there is
+nothing to contend with; the penalty grows to 11-13x as soon as concurrency
+exists, which is itself the signature.
+
+This is directly actionable for the upstream benchmark. Switching
+`SESSION_DRIVER` from `database` to `file` keeps session behaviour realistic and
+removes the shared lock — and, if the harness is going to keep hammering
+cookie-less requests, `session.lottery` should be lowered too, or the file
+driver pays a garbage-collection cost that is an artefact of the load generator
+rather than of the runtime.
+
+### Mechanism: direct evidence, not inference
+
+Throughput shape alone would be suggestive. These were measured directly.
+
+**The sessions table exists and every request writes exactly one row.** With a
+fresh container per cell and no cookies returned, the store's size at the end of
+a window *is* the number of session writes that window performed. Over exactly
+100 requests: `array` +0, `file` +100, `database` +100, `redis` +100. The
+`sessions` table is present in every image (shipped by the users migration).
+
+**Session writes per second, computed from store growth, warm-up subtracted:**
+
+| conns | `file` | `redis` | `database` |
+| --- | --- | --- | --- |
+| 1 | 469 [457-476] | 807 [800-816] | 172 [144-190] |
+| 2 | 705 [686-727] | 1,587 [1,544-1,609] | 190 [177-204] |
+| 4 | 742 [727-751] | 1,815 [1,785-1,836] | 176 [116-209] |
+| 8 | 718 [712-722] | 1,765 [1,748-1,776] | 203 [194-210] |
+| 16 | 722 [720-727] | 1,768 [1,743-1,783] | 187 [169-200] |
+| 32 | 724 [714-733] | 1,771 [1,753-1,787] | 186 [176-205] |
+| 64 | 721 [713-733] | 1,754 [1,732-1,768] | 196 [181-218] |
+| 100 | 721 [707-736] | 1,762 [1,752-1,771] | 177 [145-199] |
+
+These track requests/sec 1:1 at every point, which confirms the mechanism is the
+one assumed: one session write per request, no batching, no caching. And stated
+as a rate, the lock's ceiling is explicit — **SQLite sustains ~172-203 session
+writes per second no matter how much concurrency is offered it.**
+
+**SQLite is in rollback-journal mode, not WAL.** Read from inside every running
+container:
+
+```text
+journal_mode=delete   busy_timeout=60000   synchronous=2
+```
+
+Laravel leaves `journal_mode`, `busy_timeout` and `synchronous` at `null` in
+`config/database.php`, so SQLite keeps its default rollback journal. This is the
+strongest form of the lock: in rollback-journal mode a writer takes an EXCLUSIVE
+lock, which blocks **readers** as well as other writers. Had it been WAL, readers
+would not have blocked and the flattening would have been milder.
+
+**The 60s busy timeout is why this shows up as latency rather than errors.**
+`busy_timeout=60000` is pdo_sqlite's default. A request that finds the database
+locked waits rather than failing, so contention is absorbed into the latency
+distribution instead of surfacing as `SQLITE_BUSY`. That is exactly what the
+error accounting shows: across all 96 cells, **zero non-2xx responses** and a
+single `wrk` timeout in one `database` cell at 64 connections. The `database`
+column's throughput numbers are therefore real completed work, not cheap error
+responses — and its 2,317ms P99 is the lock, paid in latency.
+
+### What could not be obtained
+
+Stated plainly rather than guessed at:
+
+- **No `SQLITE_BUSY` counter.** pdo_sqlite exposes no busy/retry statistic, and
+  with a 60s busy timeout contention never surfaces as an error to count. The
+  evidence for serialisation is therefore the flat write-rate ceiling, the
+  rollback-journal mode, and the latency explosion — not a lock counter.
+- **No query stats from the container.** ePHPm's metrics endpoint is disabled in
+  these images, and the app reaches SQLite through stock `pdo_sqlite`, not
+  through ePHPm's litewire path, so ePHPm's own query statistics never see these
+  queries at all. This is not an ePHPm measurement; ePHPm is only the runtime.
+- **No container-engine event log.** The other recordings reconstruct host
+  discipline from `podman events`. That log is not readable in this VM — podman
+  is configured for the journald event logger, and no container events reach the
+  readable journal. The substitute is weaker and is described below.
+
+### Verification, and what was left alone
+
+- **Every cell verified its own configuration.** The compiled config cache was
+  read out of each running container before each measurement and checked against
+  the profile: `session.driver`, `cache.default`, `db.default`, and
+  `session.lottery` (the last because it is the only thing distinguishing the two
+  `file` legs, and it is invisible at run time otherwise). An image runs whatever
+  it was built with; the source tree proves nothing.
+- **ePHPm settings untouched**, from its own start-up banner:
+  `mode="worker" concurrency=2 concurrency_source="explicit" queue_depth=2
+  admission="fifo" overload="wait" shed_after_ms=0`, `worker_count=2`.
+- **Redis sidecar recorded, not tuned:**
+  `redis:7-alpine@sha256:1db42cce…`, `redis-server v=7.4.11`,
+  `save = "3600 1 300 100 60 10000"` (RDB snapshotting on the built-in save
+  points), `appendonly = no`. Sessions confirmed present in Redis, with
+  `DBSIZE` advancing 1:1 with requests.
+- **Errors recorded per measurement.** Zero non-2xx everywhere; one timeout
+  total, in `database` at 64 connections.
+
+### Caveats — read these before quoting anything above
+
+- **`redis` is the realistic arm, not the controlled one.** It adds a network
+  round trip per request and a second container competing for the same 32 cores,
+  which `array` and `file` do not. It lands below `file-nogc`, and that is
+  expected — attribute it to the hop and the CPU competition, not to Redis being
+  a poor choice. `file` is the clean control; `redis` answers "what should this
+  app use".
+- **`redis` uses predis, not phpredis.** ePHPm links its own ZTS PHP and cannot
+  load an extension built against a different PHP build, so phpredis could not be
+  installed on every arm; one pure-PHP client on all arms keeps them comparable.
+  These numbers are therefore a **lower bound** on Redis session throughput.
+- **Redis was reached over loopback in a shared network namespace**, not across a
+  bridge. Rootless `aardvark-dns` cannot start in this VM, so a DNS bridge
+  network was not available. Loopback slightly *flatters* Redis by removing
+  bridge NAT, which strengthens rather than weakens the caveat above.
+- **One arm, one endpoint.** All of this is ePHPm worker mode on `/api/static`.
+  The lock is a property of the app and SQLite, not of ePHPm, so it should
+  reproduce on every runtime — but that is an expectation, **not measured here**.
+  The planned three-arm × four-endpoint grid was not run; see below.
+- **`file-nogc` is a single repeat.** Its shape is clear; its absolute level
+  carries no run-to-run spread.
+- **`upstream` moves the cache store too.** `database` is the only profile where
+  cache is not `array`, so its deficit is sessions *plus* cache. None of the four
+  routes touch the cache, so the contribution is expected to be near zero, but it
+  was **not** isolated — the planned `database` sessions + `array` cache cell was
+  not run.
+
+### Host discipline for this recording
+
+- **96 measurement windows, verified non-overlapping.** Every cell records the
+  UTC instant `wrk` started and finished; checking all 96 intervals pairwise
+  finds **zero overlaps**. Windows are 25-26s, median gap between them 16s. The
+  one 605s gap is the interruption described below.
+- Only one pod name ever exists (`bench-sweep-pod`), and the sweep tears it down
+  before creating the next one, so two application containers being up at once is
+  structurally impossible rather than merely unobserved.
+- The host was verified clean before the run: load 0.00, zero running containers,
+  no `wrk` process, 32 CPUs, 62 GB. Builds and preflight all completed **before**
+  the first measurement window at 20:31:51Z; the last window ended 21:52:21Z.
+- **This is weaker evidence than the other recordings carry.** They reconstruct
+  the timeline from the container engine's own event log; that log is unavailable
+  here, so the above is the harness's own timestamps plus a structural argument.
+  It shows the load generator never ran twice at once. It does **not** prove no
+  unrelated container was up, the way an event log would.
+- **One documented mechanical fault.** The sweep runner's process was killed by
+  the supervising shell after 80 of 96 cells, with `array` and `file` repeat 3
+  outstanding. Nothing was measured during the fault and the teardown trap left
+  no stray containers. The run was resumed; the resume skips any cell that
+  already has output, so the 80 completed cells were **not** re-measured and no
+  number was discarded. This is the only re-run, and it was mechanical.
+
+### Reproducing it
+
+```bash
+bash bench/build-profiles.sh ephpm-worker
+RUN_ID=tier1 DURATION=25s REPEATS=3 bash bench/session-sweep.sh array file database redis
+python3 bench/sweep-table.py     results/tier1
+python3 bench/sweep-mechanism.py results/tier1 25
+python3 bench/sweep-timeline.py  results/tier1
+```
 
 ## Verdict
 

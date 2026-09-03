@@ -1,0 +1,1 @@
+session.driver=database cache.default=database db.default=sqlite session.lottery=2,100

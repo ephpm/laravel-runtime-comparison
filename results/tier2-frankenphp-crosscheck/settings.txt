@@ -1,0 +1,14 @@
+run_id=tier2-frankenphp-crosscheck
+arm=frankenphp
+endpoint=/api/static
+drivers=array file database redis
+connection_ladder=1 2 100
+duration=25s
+timeout=5s
+warmup_requests=200
+repeats=1
+cell_cooldown_seconds=10
+driver_cooldown_seconds=20
+fresh_container_per_cell=yes
+started_at=2026-09-03T22:12:36Z
+finished_at=2026-09-03T22:22:13Z

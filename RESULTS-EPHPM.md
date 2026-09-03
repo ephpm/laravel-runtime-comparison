@@ -198,7 +198,8 @@ Three different persistent session stores — disk, network, and SQLite — were
 measured on the same arm, the same endpoint, and the same host. Two of the three
 scale to the runtime's worker limit. Only SQLite does not scale at all.
 Persistence is not what flattens the benchmark; **SQLite's process-wide writer
-lock is.**
+lock is.** The same pattern reproduces on FrankenPHP Octane, so it is a property
+of the application, not of any runtime.
 
 | Comparison at 100 connections | req/s | vs `database` |
 | --- | --- | --- |
@@ -220,6 +221,32 @@ removes the shared lock — and, if the harness is going to keep hammering
 cookie-less requests, `session.lottery` should be lowered too, or the file
 driver pays a garbage-collection cost that is an artefact of the load generator
 rather than of the runtime.
+
+### Cross-check on a second runtime: FrankenPHP Octane
+
+Everything above is one runtime, which leaves an obvious objection: what if this
+is an ePHPm property rather than an app property? It is not. The same four
+profiles were rebuilt for the FrankenPHP Octane arm — also two workers — and the
+same ladder run at 1, 2 and 100 connections. One repeat, so no run-to-run spread;
+this is a confirmation of shape, not a throughput record.
+
+| conns | `array` | `file` | `redis` | `database` |
+| --- | --- | --- | --- | --- |
+| 1 | 809 | 403 | 664 | 224 |
+| 2 | 1,610 | 645 | 1,323 | 136 |
+| 100 | 1,898 | 660 | 1,496 | 118 |
+| **scaling 1→100** | **2.35x** | **1.64x** | **2.25x** | **0.53x** |
+
+FrankenPHP reproduces it, and in one respect more starkly than ePHPm: under
+`database` its throughput does not merely fail to rise, it **falls** — 224 req/s
+at one connection down to 118 at a hundred. Contending for a lock that admits one
+writer at a time costs more than not contending for it, so offering more
+concurrency makes the system slower in absolute terms. P99 shows the same
+signature as ePHPm, jumping from 9.9ms at one connection to 1,650ms at two.
+
+At 100 connections FrankenPHP is 16.1x faster on `array` and 12.7x on `redis`
+than on `database`. The lock is a property of the application and SQLite, not of
+either runtime.
 
 ### Mechanism: direct evidence, not inference
 
@@ -323,10 +350,12 @@ Stated plainly rather than guessed at:
   bridge. Rootless `aardvark-dns` cannot start in this VM, so a DNS bridge
   network was not available. Loopback slightly *flatters* Redis by removing
   bridge NAT, which strengthens rather than weakens the caveat above.
-- **One arm, one endpoint.** All of this is ePHPm worker mode on `/api/static`.
-  The lock is a property of the app and SQLite, not of ePHPm, so it should
-  reproduce on every runtime — but that is an expectation, **not measured here**.
-  The planned three-arm × four-endpoint grid was not run; see below.
+- **Two arms, one endpoint.** The full ladder is ePHPm worker mode on
+  `/api/static`; FrankenPHP Octane was measured only at 1, 2 and 100 connections,
+  one repeat. Nginx + PHP-FPM was **not** measured at all, and no endpoint other
+  than `/api/static` was measured under these profiles. The planned three-arm ×
+  four-endpoint × three-round grid was **not** run — what is here is the decisive
+  concurrency sweep plus a two-runtime cross-check.
 - **`file-nogc` is a single repeat.** Its shape is clear; its absolute level
   carries no run-to-run spread.
 - **`upstream` moves the cache store too.** `database` is the only profile where

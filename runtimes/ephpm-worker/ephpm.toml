@@ -28,7 +28,7 @@ mode = "worker"
 # spellings are startup errors on v0.9.0, not silent fallbacks.
 concurrency = 2
 
-# Pinned to PHP's stock 128M, which is what the other five images run with.
+# Pinned to PHP's stock 128M, which is what the other images run with.
 php_memory_limit = "128M"
 
 opcache_validate_timestamps = false

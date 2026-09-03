@@ -1,21 +1,28 @@
 # ePHPm in the Laravel runtime benchmark
 
-This fork adds two [ePHPm](https://github.com/ephpm/ephpm) entries to the
-benchmark and records runs of all seven setups. The app, the endpoints, the
-`wrk` parameters, and the harness are upstream's; the additions are
-`runtimes/ephpm/`, `runtimes/ephpm-worker/`, `bench/select-ephpm-binary.sh`,
-and the plumbing to list two more runtimes and to run the suite under a
-non-Docker engine.
+This fork adds two [ePHPm](https://github.com/ephpm/ephpm) entries and a
+**FrankenPHP classic** entry to the benchmark, and records runs of all of them.
+The app, the endpoints, the `wrk` parameters, and the harness are upstream's;
+the additions are `runtimes/ephpm/`, `runtimes/ephpm-worker/`,
+`runtimes/frankenphp-classic/`, `bench/select-ephpm-binary.sh`,
+`bench/percentiles.py`, and the plumbing to list three more runtimes, to select
+a class rather than a single runtime, and to run the suite under a non-Docker
+engine.
 
-There are **two recordings**. Both are kept, because they measure different
-ePHPm builds and the difference between them is the point:
+There are **three recordings**. All are kept, because they measure different
+things and the differences between them are the point:
 
 | Recording | Date | ePHPm build | Shape | Profile |
 | --- | --- | --- | --- | --- |
-| **First** | 2026-09-02 (UTC) | `ephpm/ephpm:v0.8.7-php8.4`, unmodified | 3 x 30s, plus a 1 x 20s second pass | `upstream`, then `runtime` |
-| **Second** | 2026-09-02 (UTC), later | ePHPm `main` @ `6557152` | 3 x 30s, plus a v0.8.7 "before" leg | `runtime` |
+| **First** | 2026-09-02 (UTC) | `ephpm/ephpm:v0.8.7-php8.4`, unmodified | all 7 runtimes, 3 x 30s, plus a 1 x 20s second pass | `upstream`, then `runtime` |
+| **Second** | 2026-09-02 (UTC), later | ePHPm `main` @ `6557152` | all 7 runtimes, 3 x 30s, plus a v0.8.7 "before" leg | `runtime` |
+| **Third** | 2026-09-03 (UTC) | `ephpm/ephpm:v0.9.0-php8.4`, unmodified | **per-request class only** (3 runtimes incl. the new FrankenPHP classic), 3 x 30s | `runtime` |
 
-Everything not ePHPm is identical between them.
+Everything not ePHPm is identical between the first two. The third measures a
+different set of runtimes on a different ePHPm build, so **it is not
+cross-comparable with the other two in absolute terms**; read it on its own and
+through its own control. The worker-class tables in this document are all from
+the second recording and are unchanged by it.
 
 ## Which profile every number below came from
 
@@ -36,6 +43,38 @@ the drivers its containers actually ran, and `bench/run.sh` aborts rather than
 record a run whose containers disagree with the requested profile.
 
 ## Verdict
+
+### Per-request class — third recording
+
+**ePHPm per-request beats both.** Against FrankenPHP running in its own default
+classic mode it is 22-36% ahead on throughput and 16-31% lower at every
+percentile bar one; against the Nginx + PHP FPM control it is 13-25% ahead on
+throughput and lower at every percentile bar the same one. FrankenPHP classic is
+the slowest of the three, at a flat 0.92x the control on all four endpoints.
+
+| Throughput, mean of 3 rounds | health | static | cpu | db |
+| --- | ---: | ---: | ---: | ---: |
+| ePHPm vs FrankenPHP classic | **+23.0%** | **+22.4%** | **+22.3%** | **+35.7%** |
+| ePHPm vs Nginx + PHP FPM | **+13.2%** | **+12.7%** | **+12.9%** | **+25.4%** |
+| FrankenPHP classic vs Nginx + PHP FPM | -7.9% | -8.0% | -7.8% | -7.6% |
+
+The exception both times is ePHPm's P99 on `/api/cpu`: 122.1 ms, which is +1.1%
+against the control's 120.8 ms and only -4.9% against FrankenPHP classic's
+128.4 ms, where every other tail cell is 16-31% better. It is one round of
+145.2 ms averaged with 106.3 and 114.8 — a single-round outlier in an otherwise
+unusually tight recording (every other cell's three rounds fall within a few
+percent of each other, and there were zero `wrk` timeouts anywhere). It is left
+in rather than dropped.
+
+**Read the size of the ePHPm win with care.** This is a different ePHPm build
+from the second recording (published v0.9.0 vs a self-built `main` @ 6557152)
+*and* a different, smaller rotation, so it is a new baseline rather than a
+before/after. What can be said across recordings is the ratio to the same
+control: ePHPm per-request went from roughly 0.95-1.03x Nginx + PHP FPM in the
+second recording to 1.13-1.25x here, and the `/api/db` regression flagged in the
+second recording's verdict (0.97x control) is not merely gone but reversed
+(1.25x). That is suggestive of a real v0.9.0 improvement; it is **not
+established** by this recording, which was not built to measure it.
 
 ### Worker class — second recording
 
@@ -85,7 +124,7 @@ caveats below say why.
 
 The benchmark as configured upstream is dominated by a bottleneck that is not
 the runtime, and the default numbers separate the runtimes very poorly. See
-"Two measurements, and why". Both recordings' verdicts come from
+"Two measurements, and why". Every verdict above comes from
 `BENCH_PROFILE=runtime` (array sessions and cache).
 
 ## Read the two classes separately
@@ -93,12 +132,26 @@ the runtime, and the default numbers separate the runtimes very poorly. See
 | Class | Runtimes | Model |
 | --- | --- | --- |
 | **Worker** | FrankenPHP, Swoole, OpenSwoole, RoadRunner, **ePHPm worker** | Laravel is booted once per worker and stays resident. All five run Laravel Octane. |
-| **Per-request** | Nginx + PHP FPM, **ePHPm per-request** | Every request pays a full PHP request startup, framework bootstrap, and shutdown. |
+| **Per-request** | Nginx + PHP FPM, **ePHPm per-request**, **FrankenPHP classic** | Every request pays a full PHP request startup, framework bootstrap, and shutdown. |
 
-`ephpm` is a per-request runtime; read it against Nginx with PHP FPM, not
-against the Octane runtimes. `ephpm-worker` is the entry that belongs beside the
-Octane runtimes, and it gets there through Laravel Octane's own worker loop, so
-the framework-side lifecycle is the same code in both cases.
+`ephpm` is a per-request runtime; read it against Nginx with PHP FPM and
+FrankenPHP classic, not against the Octane runtimes. `ephpm-worker` is the entry
+that belongs beside the Octane runtimes, and it gets there through Laravel
+Octane's own worker loop, so the framework-side lifecycle is the same code in
+both cases.
+
+**The same FrankenPHP binary appears in both classes, and that is the point.**
+`frankenphp` is FrankenPHP under Laravel Octane. `frankenphp-classic` is the
+identical image with a Caddyfile whose `php_server` has no `worker` — which is
+FrankenPHP's *default* mode, the one you get by installing it and pointing it at
+`public/`. Upstream's suite only ever measured the Octane configuration, so the
+mode most FrankenPHP users actually run, and the runtime architecturally closest
+to ePHPm per-request, had never been recorded at all. `bench/run.sh per-request`
+measures that class on its own.
+
+Also note both classes hold worker/thread counts at **2**. That is a fairness
+device, not a capacity claim, and it is the reason no absolute number in this
+document should be read as "what this runtime can do."
 
 ## Two measurements, and why
 
@@ -125,8 +178,8 @@ only ~1.4x where 3-10x is normal for Octane. Three checks established why:
    `DB_CONNECTION=sqlite`, and all four `/api/*` routes are declared in
    `routes/web.php`, so they carry the `web` middleware group and its
    `StartSession`. Every response carries a fresh `laravel-session` cookie.
-   SQLite serializes writers with a global write lock, so all seven runtimes
-   queue behind the same lock.
+   SQLite serializes writers with a global write lock, so every runtime
+   queues behind the same lock.
 
 That bottleneck is identical for every runtime, so the `upstream` profile is
 *fair*. It is just mostly a measurement of SQLite session-write contention
@@ -162,6 +215,204 @@ included because it is the only configuration that actually separates the
 runtimes. The **second recording is `runtime`-only**: the first recording
 already established what the `upstream` profile measures, and re-recording the
 SQLite write lock would not say anything about a dispatch-queue change.
+
+## Third recording — the per-request class, with FrankenPHP classic
+
+**What this recording is for.** FrankenPHP runs classic (non-worker) by default,
+but upstream's suite only ever measured it under Laravel Octane. That left the
+per-request class with exactly two members, and left the runtime whose
+architecture is closest to ePHPm per-request — an embedded ZTS PHP running one
+request per thread inside a single server process — unmeasured in the mode that
+actually competes with ePHPm. `runtimes/frankenphp-classic/` fixes that.
+
+Three runtimes, three rounds, 30s per endpoint, 10 threads, 100 connections,
+100 warm-up requests, 60s cooldown between runtime sessions, runtime and
+endpoint rotation intact, `BENCH_PROFILE=runtime`. `bash bench/run.sh
+per-request` measures the class as a unit, rotating the three arms round to
+round exactly as `all` does.
+
+**The ePHPm binary here is the published `ephpm/ephpm:v0.9.0-php8.4`,
+unmodified**, not the `main` build the second recording used. The worker-class
+tables elsewhere in this document are from the second recording on
+`main` @ `6557152` and are unchanged. Do not read absolute numbers across the
+two recordings; read this one through its own control.
+
+### Matching concurrency for FrankenPHP classic
+
+This is the fairness crux of the new arm, so here is the decision and the
+reasoning behind it in full.
+
+Every arm in the suite is pinned to **two concurrent PHP executions**:
+
+| Runtime | Knob | What the knob caps |
+| --- | --- | --- |
+| Nginx + PHP FPM | `pm = static`, `pm.max_children = 2` | 2 OS processes, each running one request at a time |
+| FrankenPHP (Octane) | `octane:start --workers=2` | 2 Octane workers |
+| Swoole / OpenSwoole / RoadRunner | `octane:start --workers=2` | 2 Octane workers |
+| ePHPm per-request | `[php] concurrency = 2` | 2 dedicated OS threads, each running one request at a time |
+| ePHPm worker | `[php] concurrency = 2` | 2 persistent worker threads |
+| **FrankenPHP classic** | `frankenphp { num_threads 2 }` | **2 ZTS PHP threads, each running one request at a time** |
+
+**`num_threads` is the knob, and it is the honest analogue.** In classic mode
+FrankenPHP hands an incoming request to a PHP thread, and that thread runs the
+request to completion before it takes another. The thread count is therefore
+exactly the number of PHP requests that can be executing simultaneously — the
+same quantity `pm.max_children` caps and the same quantity ePHPm's
+`concurrency` caps. There is no second candidate knob: nothing else in
+FrankenPHP bounds concurrent PHP execution.
+
+Left unset it would be `2 x CPUs`, which on this host (16C/32T) is **64** — a
+32x concurrency advantage over every other arm.
+
+`max_threads` is pinned to 2 as well. It already defaults to `num_threads`, so
+today the line changes nothing; it is written down so the cap is stated rather
+than inherited, because `max_threads` also accepts `auto`, and a future
+FrankenPHP that flipped the default would start autoscaling past 2 without
+anything failing. The container's own startup log is the receipt:
+
+```
+"msg":"FrankenPHP started 🐘","php_version":"8.4.24","num_threads":2,"max_threads":2,"max_requests":0
+```
+
+**Verified, not assumed.** Concurrency was measured before the run rather than
+taken from the documentation — `/api/health`, 8s, rising connection counts:
+
+| Connections | Requests/sec | P50 latency |
+| ---: | ---: | ---: |
+| 1 | 375.4 | 2.61 ms |
+| 2 | 749.1 | 2.63 ms |
+| 8 | 847.5 | 9.38 ms |
+| 32 | 839.6 | 37.82 ms |
+
+Throughput doubles exactly from one connection to two with latency unchanged,
+then stops dead while latency grows linearly with offered concurrency. That is
+effective parallelism of two, which is what the knob claims.
+
+**Where the analogy is clean, and where it is not.** Stated plainly, because
+the point of adding this arm is to be able to trust the comparison:
+
+- *Clean:* all three per-request arms run **two long-lived PHP execution
+  contexts that each handle one request at a time and are never recycled**.
+  `pm.max_requests` is commented out in the FPM image, FrankenPHP classic
+  reports `max_requests:0`, and ePHPm's per-request pool threads are long-lived.
+  So all three amortise PHP module init and none of them pays a
+  process/thread respawn during a measurement.
+- *Not identical:* FPM's two contexts are **processes**; FrankenPHP classic's
+  and ePHPm's are **threads** in one process. Thread-based embedders run a ZTS
+  PHP, which pays a thread-local-storage indirection that FPM's NTS PHP does
+  not. That is a real difference between FPM and the other two — and it is
+  **symmetric between FrankenPHP classic and ePHPm**, which are the two arms
+  this comparison is actually about. Both are ZTS embedders running one request
+  per thread.
+- *Not pinned anywhere, in any arm:* the non-PHP layer. Nginx picks its own
+  worker processes, FrankenPHP's Go runtime took `GOMAXPROCS=32`, ePHPm's tokio
+  runtime uses all cores. Upstream pins none of this and neither does this fork;
+  pinning it would be a different benchmark.
+- *The one place the mapping could be argued:* there is no process count to
+  match for FrankenPHP classic, because a thread is the only unit it exposes.
+  Reading "2 php-fpm processes" as "2 FrankenPHP instances" would be a
+  different and much less useful experiment. `num_threads` is the only knob that
+  caps concurrent PHP execution, so it is the one used.
+- *Memory budget:* FrankenPHP's own sizing rule is
+  `num_threads x memory_limit < available_memory`. At `2 x 128M` this arm gets
+  the same 256M aggregate PHP budget as the FPM arm's two 128M children and
+  ePHPm's `concurrency = 2` at 128M.
+
+### Throughput, requests/sec
+
+Cells are `mean [min-max]` across the three rounds. Zero `wrk` timeouts anywhere
+in this recording.
+
+| Runtime | health | static | cpu | db |
+| --- | ---: | ---: | ---: | ---: |
+| **ePHPm per-request** | **1,022** <sub>[1010-1029]</sub> | **1,010** <sub>[997-1022]</sub> | **997** <sub>[987-1005]</sub> | **719** <sub>[711-725]</sub> |
+| Nginx + PHP FPM | 903 <sub>[889-917]</sub> | 896 <sub>[890-903]</sub> | 884 <sub>[876-892]</sub> | 574 <sub>[570-577]</sub> |
+| FrankenPHP classic | 831 <sub>[828-833]</sub> | 825 <sub>[818-833]</sub> | 815 <sub>[810-818]</sub> | 530 <sub>[512-546]</sub> |
+
+### Ratio to control (Nginx + PHP FPM = 1.00), throughput
+
+| Runtime | health | static | cpu | db |
+| --- | ---: | ---: | ---: | ---: |
+| **ePHPm per-request** | **1.13** | **1.13** | **1.13** | **1.25** |
+| Nginx + PHP FPM | 1.00 | 1.00 | 1.00 | 1.00 |
+| FrankenPHP classic | 0.92 | 0.92 | 0.92 | 0.92 |
+
+FrankenPHP classic is remarkably flat against the control — 0.921 / 0.920 /
+0.922 / 0.924 — which is what a uniform per-request overhead difference looks
+like, as opposed to something workload-shaped.
+
+### Latency, ms (lower is better)
+
+| Runtime | | health | static | cpu | db |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **ePHPm per-request** | P50 | **97.6** <sub>[97.0-98.7]</sub> | **98.7** <sub>[97.5-100.2]</sub> | **99.5** <sub>[98.6-100.9]</sub> | **138.9** <sub>[137.7-140.4]</sub> |
+| | P90 | **98.8** <sub>[98.1-99.9]</sub> | **99.9** <sub>[98.6-101.2]</sub> | **101.2** <sub>[100.1-102.5]</sub> | **141.8** <sub>[140.8-143.8]</sub> |
+| | P99 | **103.3** <sub>[101.5-104.5]</sub> | **107.1** <sub>[103.4-109.8]</sub> | 122.1 <sub>[106.3-145.2]</sub> | **145.4** <sub>[143.2-147.9]</sub> |
+| Nginx + PHP FPM | P50 | 110.0 <sub>[108.7-111.4]</sub> | 111.0 <sub>[110.5-111.6]</sub> | 112.4 <sub>[111.4-113.2]</sub> | 172.8 <sub>[171.7-173.4]</sub> |
+| | P90 | 112.4 <sub>[111.0-114.1]</sub> | 113.2 <sub>[112.6-114.1]</sub> | 115.0 <sub>[114.0-116.5]</sub> | 178.9 <sub>[177.3-182.2]</sub> |
+| | P99 | 118.7 <sub>[114.8-122.4]</sub> | 119.5 <sub>[116.2-124.4]</sub> | **120.8** <sub>[118.6-123.7]</sub> | 193.1 <sub>[181.4-215.9]</sub> |
+| FrankenPHP classic | P50 | 119.5 <sub>[119.2-119.7]</sub> | 120.6 <sub>[119.7-121.5]</sub> | 122.0 <sub>[121.6-122.8]</sub> | 187.7 <sub>[182.3-194.6]</sub> |
+| | P90 | 121.6 <sub>[121.1-122.0]</sub> | 122.8 <sub>[121.9-123.6]</sub> | 124.0 <sub>[123.6-124.9]</sub> | 199.6 <sub>[192.2-206.9]</sub> |
+| | P99 | 126.1 <sub>[125.1-127.0]</sub> | 128.1 <sub>[127.6-128.6]</sub> | 128.4 <sub>[128.0-128.8]</sub> | 210.5 <sub>[197.8-223.2]</sub> |
+
+This is a closed-loop test at 100 connections, so mean latency is pinned to
+`connections / throughput` and the P50 column is largely the throughput column
+restated. The tail columns are the ones that carry independent information, and
+the ordering there is the same: ePHPm, then FPM, then FrankenPHP classic, on
+every endpoint except ePHPm's single outlier round on `/api/cpu`.
+
+### The three arms are not the same PHP
+
+Worth stating because it bears directly on how to read the FrankenPHP classic
+result. Captured from each container during the run
+(`results/<run-id>/<runtime>/run-1/php-runtime.txt`):
+
+| Runtime | PHP | Thread safety | Execution context |
+| --- | --- | --- | --- |
+| Nginx + PHP FPM | 8.4.24 | **NTS** | 2 processes |
+| FrankenPHP classic | 8.4.24 | **ZTS** | 2 threads, 1 process |
+| ePHPm per-request | 8.4.23 | **ZTS** | 2 threads, 1 process |
+
+FrankenPHP classic and Nginx + PHP FPM run the *same PHP release*, built the
+same day from the same upstream source, and differ in thread-safety mode and
+SAPI. ZTS PHP pays a thread-local-storage indirection that NTS does not, and a
+5-10% penalty is the usual quoted figure. FrankenPHP classic landing at a flat
+0.92x the FPM control is squarely inside that range, so the most likely reading
+of that number is **"this is what embedding ZTS PHP costs", not "FrankenPHP's
+server is slow"**.
+
+Which makes the ePHPm number the interesting one: ePHPm is also an embedded ZTS
+PHP running one request per thread, pays the same ZTS tax, and still lands at
+1.13-1.25x the NTS control. Whatever ePHPm is doing differently in its
+per-request path is worth more than the ZTS penalty costs.
+
+Two disclosures on the table above. ePHPm is one patch release behind (8.4.23
+against 8.4.24) because that is what the pinned `php-sdk` build for
+`ephpm/ephpm:v0.9.0-php8.4` ships; nothing in the 8.4.23-to-8.4.24 range is
+known to be performance-relevant, but it is a difference and it is not
+controlled. And the interpretation of the ZTS gap above is an *interpretation* —
+this harness does not isolate thread-safety mode, and doing so would need an NTS
+FrankenPHP and a ZTS FPM, neither of which exists as a pinned image here.
+
+### Host discipline for this recording
+
+Reconstructed from the engine's own event log across the whole 06:47-07:16Z
+window, not from a snapshot:
+
+- Nine measurement windows, each ~2m05s, strictly serial: every container's
+  `died` precedes the next container's `start`, with the configured ~61s gap
+  between them. No two runtimes were ever up at once.
+- Zero `wrk` timeouts in any of the 36 measurements.
+- One unrelated container ran inside the window: a 16 ms `podman run` reading a
+  config file out of the FPM image, at 06:51:26Z — in the cooldown gap between
+  `nginx-fpm` round 1 (ended 06:51:07Z) and `ephpm` round 1 (started 06:52:08Z),
+  not during any measurement.
+- Host load average before the first measurement was 0.55; no other `wrk` was
+  running.
+
+This matters because the failure it guards against is quiet: a competing
+100-connection `wrk` costs roughly 40% of throughput, and it shows up as one
+arm's rounds being low, which reads as a slow runtime rather than a busy host.
 
 ## Second recording — ePHPm `main` @ 6557152
 
@@ -471,14 +722,32 @@ same database write lock.
 
 ## What was added
 
-**`runtimes/ephpm`** — ePHPm's default `fpm` mode with `[php] workers = 2`,
-which caps concurrent PHP execution at two and is ePHPm's equivalent of the
-`pm.max_children = 2` the Nginx + PHP FPM image uses.
+**`runtimes/ephpm`** — ePHPm's default per-request mode with
+`[php] concurrency = 2`, which caps concurrent PHP execution at two and is
+ePHPm's equivalent of the `pm.max_children = 2` the Nginx + PHP FPM image uses.
+(Before ePHPm v0.9.0 those two knobs were spelled `mode = "fpm"` and
+`workers = 2`; see "The v0.9.0 config rename".)
 
-**`runtimes/ephpm-worker`** — ePHPm's `worker` mode with `worker_count = 2`,
+**`runtimes/ephpm-worker`** — ePHPm's `worker` mode with `[php] concurrency = 2`,
 matching `--workers=2` on the Octane runtimes. The entrypoint is
 `ephpm/octane-driver`, which implements Laravel Octane's `Client` contract and
 drives Octane's own `Worker` loop.
+
+**`runtimes/frankenphp-classic`** — the same pinned FrankenPHP image as
+`runtimes/frankenphp`, with a Caddyfile whose `php_server` has no `worker`
+directive. That is FrankenPHP's default mode. Concurrency is `num_threads 2`;
+see "Matching concurrency for FrankenPHP classic".
+
+**`bench/percentiles.py`** — extracts P50/P75/P90/P99 and per-round rows from
+the raw `wrk` output. `bench/summarize.sh` emits average latency and P99 only,
+averaged across rounds; every tail number and every `[min-max]` spread in this
+document comes from this script instead.
+
+**`bash bench/run.sh per-request` / `worker`** — measures one class as a unit,
+with the harness's rotation, cooldowns and profile check intact. The two classes
+are not comparable to each other, so re-recording one alone is a normal thing to
+want, and a hand-written loop over single-runtime invocations loses the
+rotation.
 
 **`bench/select-ephpm-binary.sh`** — chooses which ePHPm binary the two images
 run. Both images are built `FROM ephpm/ephpm:v0.8.7-php8.4` and overwrite
@@ -499,9 +768,11 @@ almalinux8 / glibc-2.28 container the published release binaries are built in.
 ## Normalisation
 
 **PHP version.** Every image, including both ePHPm images, runs PHP 8.4.
+`frankenphp-classic` runs the same pinned FrankenPHP digest as `frankenphp`
+(PHP 8.4.24), so the two FrankenPHP entries differ only in mode.
 
 **Database.** The upstream harness already used SQLite, so nothing had to change
-to make storage uniform: all seven runtimes use stock `pdo_sqlite` against a
+to make storage uniform: every runtime uses stock `pdo_sqlite` against a
 `database/database.sqlite` seeded at image build with 100 users and 1,000
 products.
 
@@ -511,7 +782,10 @@ This benchmark varies the HTTP request path and holds storage constant.
 Measuring ePHPm's embedded database against `pdo_sqlite` is a separate question
 needing its own harness, and is not part of these numbers.
 
-**OPcache.** The other six images share `runtimes/php.ini`. ePHPm embeds PHP and
+**OPcache.** The other images all share `runtimes/php.ini`, including
+`frankenphp-classic`, which copies it to the same
+`/usr/local/etc/php/conf.d/benchmark.ini` path as the Octane FrankenPHP image.
+ePHPm embeds PHP and
 generates its own `php.ini` at startup, so the same directives are set through
 ePHPm's typed knobs in `runtimes/ephpm*/ephpm.toml`:
 `opcache.memory_consumption=128`, `interned_strings_buffer=16`,
@@ -566,6 +840,50 @@ Rootless Podman cannot start Compose v5's privileged buildkit container, so
 images were built with `DOCKER_BUILDKIT=0`. That affects image construction
 only, not the measured request path.
 
+### The v0.9.0 config rename
+
+ePHPm v0.9.0 renamed the per-request configuration surface. The committed
+`runtimes/ephpm*/ephpm.toml` used the old spellings and **would not have
+started** on it:
+
+| Before v0.9.0 | v0.9.0 |
+| --- | --- |
+| `[php] mode = "fpm"` | `[php] mode = "per_request"` |
+| `[php] workers` / `[php] worker_count` | `[php] concurrency` (bounds both modes) |
+| `[php] worker_backlog` | `[php] queue_depth` |
+| `[php] overload_policy` | `[php] overload` |
+| `[php] worker_script` | `[php.worker] script` |
+| `[php] fpm_engine` | removed |
+
+None of this fails quietly. Every `[php]` key is rejected by name and every
+mode-selecting value is an enum, so the old config is a startup error, not a
+silent fallback to a default:
+
+```
+error: failed to load configuration: unknown variant: found `fpm`,
+expected ``per_request` or `worker`` for key "default.php.mode"
+```
+
+That is worth stating because the silent-fallback version of this rename would
+have been the worst possible outcome for a benchmark: `mode` falling back to its
+default and `workers = 2` being ignored would have handed ePHPm an autotuned
+concurrency while every other arm stayed at two, and the run would have looked
+fine. Both ePHPm arms' startup logs are checked in this recording and report
+what the config asked for:
+
+```
+php execution configured mode="per_request" concurrency=2
+  concurrency_source="explicit" queue_depth=2 admission="fifo" overload="wait"
+php execution pool started thread_count=2 backlog=2 admission="fifo"
+```
+
+One new v0.9.0 diagnostic shows up in both ePHPm images and is expected here: a
+startup warning that OPcache timestamp validation is off while the RESP listener
+is disabled, so `ephpm deploy` / `ephpm cache reset` cannot reach the server.
+For an immutable benchmark image whose code never changes that is exactly the
+intended configuration; the warning is about a deployment workflow this harness
+does not have.
+
 ### The second recording's ePHPm binary is self-built
 
 The five non-ePHPm runtimes and the v0.8.7 "before" leg run published,
@@ -597,6 +915,13 @@ release CI.
   rotated among seven runtimes. Its rounds are ~3 minutes apart instead of ~19.
   This is why the per-request before/after above is read through the
   Nginx + PHP FPM ratio rather than directly.
+- **Third recording, one class only.** It measures the three per-request
+  runtimes and nothing else, rotated among themselves. That is a deliberate
+  narrowing, not an interruption: the worker class was already recorded and the
+  question the recording asks — how ePHPm per-request compares to FrankenPHP in
+  the mode FrankenPHP defaults to — lives entirely inside the per-request class.
+  Because the rotation is over three arms instead of seven, a given arm's rounds
+  are ~10 minutes apart rather than ~19.
 - **Supplementary duration.** The first recording's supplementary run was one
   round of 20s; the second recording is three rounds of 30s. Absolute
   throughput is slightly lower at 30s across every runtime, so cross-recording
@@ -643,6 +968,19 @@ ROUNDS=3 DURATION=30s COOLDOWN=60 ENDPOINT_COOLDOWN=0 INITIAL_COOLDOWN=60 \
 bash bench/run.sh all
 ```
 
+The third recording is the same command narrowed to the per-request class,
+against the published v0.9.0 binary:
+
+```bash
+bash bench/select-ephpm-binary.sh published            # v0.9.0, the base image's own
+
+BENCH_PROFILE=runtime \
+COMPOSE_CMD="podman compose" \
+ROUNDS=3 DURATION=30s COOLDOWN=60 ENDPOINT_COOLDOWN=0 INITIAL_COOLDOWN=60 \
+RUN_ID=20260903T0650Z-perrequest-v090 \
+bash bench/run.sh per-request
+```
+
 The first recording's `runtime` leg was one round of 20s
 (`ROUNDS=1 DURATION=20s`); everything else about it matches the second command.
 The second recording's v0.8.7 "before" leg is the same command restricted to
@@ -676,9 +1014,10 @@ from.
 | `20260902T001036Z` | `upstream` | First recording, the harness as it ships |
 | `20260902T050000Z-main6557152` | `runtime` | Second recording, all seven runtimes on `main` @ 6557152 |
 | `20260902T0700Z-v087before` | `runtime` | Second recording, the two ePHPm entries on published v0.8.7 |
+| `20260903T0650Z-perrequest-v090` | `runtime` | Third recording, the per-request class on published v0.9.0 |
 
-Those three `settings.txt` files predate the `BENCH_PROFILE` knob and so do not
-carry a `bench_profile=` line; the profile for each is stated in the table
-above. Runs recorded from here on record it themselves. The first recording's
-`runtime` leg is not among the committed run directories; its numbers are the
-tables under "First recording".
+The first three `settings.txt` files predate the `BENCH_PROFILE` knob and so do
+not carry a `bench_profile=` line; the profile for each is stated in the table
+above. Runs recorded from here on record it themselves — the third recording's
+does. The first recording's `runtime` leg is not among the committed run
+directories; its numbers are the tables under "First recording".

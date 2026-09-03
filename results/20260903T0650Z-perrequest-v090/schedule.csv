@@ -1,0 +1,10 @@
+sequence,round,runtime,endpoint_order
+1,1,nginx-fpm,db|health|static|cpu
+2,1,ephpm,db|health|static|cpu
+3,1,frankenphp-classic,db|health|static|cpu
+4,2,ephpm,health|static|cpu|db
+5,2,frankenphp-classic,health|static|cpu|db
+6,2,nginx-fpm,health|static|cpu|db
+7,3,frankenphp-classic,static|cpu|db|health
+8,3,nginx-fpm,static|cpu|db|health
+9,3,ephpm,static|cpu|db|health

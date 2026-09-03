@@ -1,0 +1,13 @@
+runtime,endpoint,runs,avg_requests_per_sec,stddev_requests_per_sec,min_requests_per_sec,max_requests_per_sec,avg_latency_ms,avg_p99_latency_ms,max_p99_latency_ms,total_timeout_errors
+ephpm,cpu,3,997.36,9.52,986.57,1004.58,100.06,122.10,145.23,0
+ephpm,db,3,718.95,7.41,710.63,724.83,138.74,145.44,147.86,0
+ephpm,health,3,1021.81,9.89,1010.48,1028.70,97.71,103.33,104.55,0
+ephpm,static,3,1009.96,12.54,997.02,1022.05,98.84,107.13,109.77,0
+frankenphp-classic,cpu,3,814.96,4.65,809.61,818.02,122.42,128.42,128.75,0
+frankenphp-classic,db,3,529.95,17.11,512.14,546.27,188.16,210.48,223.20,0
+frankenphp-classic,health,3,831.33,2.72,828.19,833.07,120.03,126.08,127.03,0
+frankenphp-classic,static,3,825.02,7.40,818.43,833.03,120.95,128.10,128.63,0
+nginx-fpm,cpu,3,883.53,8.05,875.56,891.65,112.94,120.79,123.74,0
+nginx-fpm,db,3,573.48,3.71,569.96,577.36,173.82,193.11,215.90,0
+nginx-fpm,health,3,902.86,14.00,888.97,916.97,110.56,118.72,122.44,0
+nginx-fpm,static,3,896.42,6.67,889.51,902.83,111.32,119.51,124.43,0

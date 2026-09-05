@@ -13,6 +13,7 @@ RUNTIME_NAMES = {
     "swoole": "Swoole",
     "openswoole": "OpenSwoole",
     "roadrunner": "RoadRunner",
+    "ephpm-worker": "ePHPm",
     "nginx-fpm": "Nginx with PHP FPM",
 }
 ENDPOINT_NAMES = {

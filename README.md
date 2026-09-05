@@ -2,7 +2,7 @@
 
 # Laravel Runtime Benchmark
 
-This repository provides a repeatable benchmark for one Laravel application running on five PHP server setups:
+This repository provides a repeatable benchmark for one Laravel application running on six PHP server setups:
 
 1. FrankenPHP
 
@@ -12,7 +12,9 @@ This repository provides a repeatable benchmark for one Laravel application runn
 
 4. RoadRunner
 
-5. Nginx with PHP FPM
+5. ePHPm
+
+6. Nginx with PHP FPM
 
 Every setup uses the same Laravel source, Composer lock file, database schema, seed data, endpoints, worker count, and OPcache configuration. Docker base images are pinned with digest values so that a later build does not silently pull a different image.
 
@@ -64,13 +66,25 @@ results/              Benchmark output grouped by run ID
 
 ## Runtime setup
 
-The FrankenPHP, Swoole, OpenSwoole, and RoadRunner setups use Laravel Octane with two application workers.
+The FrankenPHP, Swoole, OpenSwoole, RoadRunner, and ePHPm setups use Laravel Octane with two application workers.
 
 The Nginx setup uses Nginx in front of PHP FPM with two static PHP FPM children.
 
 All setups enable OPcache. JIT is disabled in the shared PHP configuration. The application is seeded with 100 users and 1,000 products in a SQLite database during the Docker image build.
 
 The runtime Dockerfiles copy the same `app/composer.json` and `app/composer.lock` files. This keeps the Laravel dependency set identical across all images.
+
+### ePHPm
+
+ePHPm links PHP into a single binary, so its published image contains no PHP CLI and no Composer. `runtimes/ephpm-worker/Dockerfile` therefore builds the vendor tree and the seeded database in a stage on the same pinned `php:8.4-cli-alpine` and `composer` images the other runtimes use, then copies the result into the ePHPm image.
+
+Two further points are specific to this setup:
+
+1. ePHPm generates its own `php.ini`, so the directives in `runtimes/php.ini` are mirrored through the equivalent settings in `runtimes/ephpm-worker/ephpm.toml`. The PHP memory limit is pinned to `128M` there. ePHPm derives that limit from available host memory when it is left unset, which would give this image a different budget from the others.
+
+2. It runs Laravel Octane through `ephpm/octane-driver`, which is published through its GitHub repository rather than Packagist. The Dockerfile adds it as a Composer `vcs` repository at a pinned version. This is the only place where an image's dependency set differs from the shared `composer.lock`. Both packages involved (`ephpm/octane-driver` and its `ephpm/worker` dependency) are MIT licensed.
+
+ePHPm also embeds a SQLite-compatible database engine and a key/value store. Neither is enabled here. The application uses stock `pdo_sqlite` against the same seeded database file as every other runtime.
 
 ## Endpoints
 
@@ -117,6 +131,7 @@ bash bench/run.sh frankenphp
 bash bench/run.sh swoole
 bash bench/run.sh openswoole
 bash bench/run.sh roadrunner
+bash bench/run.sh ephpm-worker
 bash bench/run.sh nginx-fpm
 bash bench/run.sh all
 ```

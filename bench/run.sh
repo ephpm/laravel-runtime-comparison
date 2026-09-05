@@ -22,6 +22,7 @@ runtime_port() {
     swoole) printf '8082' ;;
     openswoole) printf '8083' ;;
     roadrunner) printf '8084' ;;
+    ephpm-worker) printf '8086' ;;
     nginx-fpm) printf '8085' ;;
     *) return 1 ;;
   esac
@@ -29,7 +30,7 @@ runtime_port() {
 
 runtime_order_for_round() {
   local round="$1"
-  local runtimes=(frankenphp swoole openswoole roadrunner nginx-fpm)
+  local runtimes=(frankenphp swoole openswoole roadrunner ephpm-worker nginx-fpm)
   local count="${#runtimes[@]}"
   local offset=$(( (round - 1) % count ))
   local index=0
@@ -55,7 +56,7 @@ endpoint_order_for_round() {
 
 usage() {
   printf 'Usage: %s [runtime|all]\n' "$0"
-  printf 'Runtime values: frankenphp swoole openswoole roadrunner nginx-fpm\n'
+  printf 'Runtime values: frankenphp swoole openswoole roadrunner ephpm-worker nginx-fpm\n'
   printf 'Defaults: ROUNDS=3 DURATION=30s THREADS=10 CONNECTIONS=100 TIMEOUT=5s WARMUP_REQUESTS=100 COOLDOWN=900.\n'
 }
 
@@ -233,7 +234,7 @@ write_schedule
 
 printf 'Preparing runtime images before measurements...\n'
 if [[ "$RUNTIME_LIST" == "all" ]]; then
-  for runtime in frankenphp swoole openswoole roadrunner nginx-fpm; do
+  for runtime in frankenphp swoole openswoole roadrunner ephpm-worker nginx-fpm; do
     prepare_runtime "$runtime"
   done
 else

@@ -1,0 +1,13 @@
+name: laravel-benchmark-ephpm-worker
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: runtimes/ephpm-worker/Dockerfile
+    ports:
+      - "8086:8000"
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      LOG_CHANNEL: stderr

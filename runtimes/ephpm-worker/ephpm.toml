@@ -1,0 +1,48 @@
+# ePHPm persistent worker mode. The application is bootstrapped once per worker
+# and each request is dispatched into an already-booted Laravel, the same model
+# the Octane runtimes use. The worker entrypoint is Octane's own worker loop,
+# reached through ephpm/octane-driver.
+#
+# ePHPm generates its own php.ini, so the directives in runtimes/php.ini are
+# mirrored here through the equivalent typed settings.
+
+[server]
+listen = "0.0.0.0:8000"
+document_root = "/var/www/html/public"
+
+[server.metrics]
+enabled = false
+
+[php]
+mode = "worker"
+
+# Matches `octane:start --workers=2` on the other worker runtimes.
+concurrency = 2
+
+# ePHPm sizes the PHP memory limit from available host memory when this is
+# unset, which would give this image a different budget from the others. Pinned
+# to PHP's stock 128M, which is what the other images run with.
+php_memory_limit = "128M"
+
+# runtimes/php.ini, expressed as ePHPm settings. opcache.enable is already on by
+# default. opcache.enable_cli has no equivalent here and is not needed: ePHPm
+# serves requests from the linked runtime, not from a CLI process.
+opcache_validate_timestamps = false
+opcache_memory_consumption = 128
+opcache_interned_strings_buffer = 16
+opcache_max_accelerated_files = 20000
+opcache_jit = "disable"
+opcache_jit_buffer_size = 0
+realpath_cache_size = "4096K"
+realpath_cache_ttl = 600
+
+[php.worker]
+# Resolved relative to document_root, and ePHPm requires it to resolve to a file
+# under it, which is why the Dockerfile copies the driver's entrypoint into
+# public/.
+script = "ephpm-octane-worker.php"
+
+# ePHPm also embeds a SQLite-compatible database engine and a key/value store.
+# Neither is configured here: the application uses stock pdo_sqlite against the
+# same seeded database file as every other runtime, so this image is compared on
+# HTTP request handling only.
